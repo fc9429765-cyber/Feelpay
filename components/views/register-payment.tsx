@@ -520,6 +520,18 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
   const barraCobrarRef = useRef<HTMLDivElement | null>(null)
   const [accountNumber, setAccountNumber] = useState("")
   const [isCancelada, setIsCancelada] = useState(false)
+  /**
+   * RENOVAR: refinanciar el crédito en el mismo cobro (scripts/123).
+   *
+   * El cliente paga y además recibe plata nueva: el valor, con la tasa del
+   * crédito, se suma a lo que debe y el saldo se reparte en las cuotas que le
+   * quedaban más los días nuevos. Se registra DESPUÉS del pago, por la misma
+   * cola, así que sin señal queda en orden detrás de él. No se combina con
+   * "Cancelada".
+   */
+  const [renovar, setRenovar] = useState(false)
+  const [valorRenovar, setValorRenovar] = useState("")
+  const [diasRenovar, setDiasRenovar] = useState("")
   // ── Extension de plazo (solo prestamos "americano" en su ULTIMA cuota) ──
   // Cuando un prestamo de tipo intereses (americano) llega a su ultima cuota
   // programada, el administrador puede optar por "prorrogar" el plazo: pagar
@@ -1561,6 +1573,9 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     setAccountNumber("")
     setPaymentPhoto(null)
     setIsCancelada(false)
+    setRenovar(false)
+    setValorRenovar("")
+    setDiasRenovar("")
     setExtenderCuotas(false)
     setCantidadCuotasExtender("1")
     setPagarMulta(false)
@@ -1581,6 +1596,9 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     setAccountNumber("")
     setPaymentPhoto(null)
     setIsCancelada(false)
+    setRenovar(false)
+    setValorRenovar("")
+    setDiasRenovar("")
     setExtenderCuotas(false)
     setCantidadCuotasExtender("1")
     setPagarMulta(false)
@@ -1627,6 +1645,44 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
         variant: "destructive",
       })
       return
+    }
+
+    // RENOVAR: se valida TODO antes de cobrar, para no dejar un pago hecho y
+    // una renovación rebotada por algo que se podía saber desde acá.
+    const renovarSnap = renovar
+    const valorRenovarN = Number.parseFloat(valorRenovar) || 0
+    const diasRenovarN = Number.parseInt(diasRenovar, 10) || 0
+    if (renovarSnap) {
+      if (valorRenovarN <= 0 || diasRenovarN < 1) {
+        toast({ title: "Faltan datos de la renovación", description: "Escribe el valor a renovar y los días.", variant: "destructive" })
+        return
+      }
+      if (selectedClient.tipoAmortizacion?.toLowerCase().trim() === "americano") {
+        toast({ title: "No se puede renovar", description: "Los créditos americanos se extienden con la prórroga.", variant: "destructive" })
+        return
+      }
+      // Si el pago salda el crédito, el crédito queda cancelado y ya no hay
+      // qué renovar: para eso está la venta nueva de renovación.
+      if (monto >= selectedClient.saldo) {
+        toast({
+          title: "Este pago salda el crédito",
+          description: "Para renovar, el pago no puede cubrir todo el saldo. Si va a cancelar, hazle después una venta de renovación.",
+          variant: "destructive",
+        })
+        return
+      }
+      if (
+        umbrales?.venta_renovacion_habilitado &&
+        umbrales.venta_renovacion_umbral != null &&
+        valorRenovarN > umbrales.venta_renovacion_umbral
+      ) {
+        toast({
+          title: "La renovación supera el umbral de la ruta",
+          description: `El tope es $${umbrales.venta_renovacion_umbral.toLocaleString("es-CO")}. Una renovación mayor la hace secretaría.`,
+          variant: "destructive",
+        })
+        return
+      }
     }
 
     const saldoDisponible = selectedClient.saldo
@@ -1917,6 +1973,60 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
             payload: payloadPrincipal,
           })
 
+      // ── LA RENOVACIÓN, DETRÁS DEL PAGO ─────────────────────────────────
+      // Primero el pago y después la renovación: la renovación conserva las
+      // cuotas que la plata ya cubre, así que el cobro de hoy tiene que haber
+      // entrado antes. Si el pago quedó en la cola, la renovación va a la cola
+      // detrás de él (se envía en orden de captura) y no directo.
+      let renovacionOk = false
+      let renovacionError: string | null = null
+      if (renovarSnap) {
+        const idRenov = nuevaGestionId()
+        const opRenov = {
+          tipo: "rpc" as const,
+          id: idRenov,
+          descripcion: `Renovación — ${clientSnapshot.nombre} ($${valorRenovarN.toLocaleString()})`,
+          payload: {
+            fn: "renovar_prestamo",
+            payload: {
+              loan_id: clientSnapshot.loanId,
+              valor: valorRenovarN,
+              dias: diasRenovarN,
+              fecha_gestion: fechaAplicacion,
+              fecha_hora: fechaPagoReal,
+            },
+          },
+        }
+        try {
+          if (encolado) {
+            await new Promise((r) => setTimeout(r, 5))
+            await encolar(opRenov)
+            renovacionOk = true
+          } else {
+            const r = await enviarOEncolar(opRenov)
+            renovacionOk = r.encolado || r.resultado?.ok !== false
+          }
+        } catch (err) {
+          // El pago YA entró: no se deshace. Se avisa que la renovación no, y
+          // por qué (umbral, crédito cancelado, script 123 sin correr…).
+          const e = err as { message?: string; code?: string }
+          renovacionError = e.code === "PGRST202"
+            ? "Falta correr el script 123 en la base."
+            : e.message || "Error desconocido"
+          console.error("[v0] Renovación:", err)
+        }
+      }
+      const sufijoRenov = renovarSnap && renovacionOk
+        ? ` · Cliente renovado por $${valorRenovarN.toLocaleString("es-CO")}`
+        : ""
+      if (renovacionError) {
+        toast({
+          title: "El pago quedó, la renovación no",
+          description: renovacionError,
+          variant: "destructive",
+        })
+      }
+
       if (encolado) {
         // El cliente sale de Pendientes IGUAL que con señal, y el evento se
         // inyecta en el cache del dispositivo.
@@ -1976,7 +2086,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
           title: "Pago guardado sin conexión",
           description: retroAplicado
             ? `Se registró $${monto.toLocaleString()} con fecha ${fechaAplicacion} en el teléfono. ${clientSnapshot.nombre} sigue disponible para la gestión de hoy.`
-            : `Se registró el pago de ${clientSnapshot.nombre} en el teléfono. Se enviará solo cuando vuelva la señal.`,
+            : `Se registró el pago de ${clientSnapshot.nombre} en el teléfono${sufijoRenov}. Se enviará solo cuando vuelva la señal.`,
         })
         handleBack()
         return
@@ -2100,7 +2210,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
         toast({
           duration: 1000,
           title: "Pago registrado",
-          description: `Se registró el pago por $${monto.toLocaleString()}${multaSuffix} para ${clientSnapshot.nombre}`,
+          description: `Se registró el pago por $${monto.toLocaleString()}${multaSuffix} para ${clientSnapshot.nombre}${sufijoRenov}`,
         })
       }
 
@@ -2676,6 +2786,32 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
       }
     }
 
+    // ¿SE RENOVÓ ESE DÍA? Sale del libro (el evento `ajuste` de la
+    // renovación, scripts/123), así que el recibo lo dice igual si se vuelve
+    // a generar más tarde desde el menú.
+    let renovacionHoy: { valor: number; cuotas: number; cuota: number } | null = null
+    {
+      const { data: ajustes } = await supabase
+        .from("gestiones")
+        .select("detalle")
+        .eq("loan_id", client.loanId)
+        .eq("fecha_gestion", diaDeTrabajo)
+        .eq("tipo", "ajuste")
+        .eq("estado", "aplicada")
+      let valorRenov = 0
+      let cuotasRenov = 0
+      let cuotaRenov = 0
+      for (const a of (ajustes ?? []) as { detalle?: Record<string, unknown> | null }[]) {
+        const d = a.detalle
+        if (d && d.clase === "renovacion") {
+          valorRenov += Number(d.valor_entregado) || 0
+          cuotasRenov = Number(d.cuotas_nuevas) || 0
+          cuotaRenov = Number(d.valor_cuota_nueva) || 0
+        }
+      }
+      if (valorRenov > 0) renovacionHoy = { valor: valorRenov, cuotas: cuotasRenov, cuota: cuotaRenov }
+    }
+
     // Logo propio de la ruta; si no hay, el de la app.
     const umbralesRuta = await getRutaUmbrales(currentRutaId)
     const logoUrl = umbralesRuta.logo_url || `${window.location.origin}/opad-logo.png`
@@ -2751,6 +2887,19 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
         filas: [
           { label: "Fecha del abono:", valor: fmtFechaCorta(fechaAbono) },
           { label: "Valor pagado:", valor: fmt(abonoHoy), fuerte: true },
+        ],
+      })
+    }
+
+    // CLIENTE RENOVADO: solo si ese día se renovó el crédito.
+    if (renovacionHoy && renovacionHoy.valor > 0) {
+      secciones.push({
+        titulo: "Renovación",
+        filas: [
+          { label: "Cliente renovado por:", valor: fmt(renovacionHoy.valor), fuerte: true },
+          ...(renovacionHoy.cuotas > 0
+            ? [{ label: "Nuevas cuotas:", valor: `${renovacionHoy.cuotas} de ${fmt(renovacionHoy.cuota)}` }]
+            : []),
         ],
       })
     }
@@ -5059,6 +5208,24 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                   <Checkbox id="partialPayment" checked={isPartialPayment} onCheckedChange={(c) => handlePartialPaymentChange(c as boolean)} className="h-4 w-4 border-2 border-gray-400 dark:border-gray-500" />
                   <Label htmlFor="partialPayment" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap">Pago manual</Label>
                 </div>
+                {/* RENOVAR: no en créditos americanos (tienen la prórroga). Al
+                    marcarlo se esconde "Cancelada": no se combinan. */}
+                {selectedClient.tipoAmortizacion?.toLowerCase().trim() !== "americano" && (
+                  <div className="flex items-center space-x-1.5">
+                    <Checkbox
+                      id="renovar"
+                      checked={renovar}
+                      onCheckedChange={(c) => {
+                        const on = c === true
+                        setRenovar(on)
+                        if (on) setIsCancelada(false)
+                      }}
+                      className="h-4 w-4 border-2 border-blue-500"
+                    />
+                    <Label htmlFor="renovar" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap text-blue-800">Renovar</Label>
+                  </div>
+                )}
+                {!renovar && (
                 <div className="flex items-center space-x-1.5">
                   <Checkbox
                     id="cancelada"
@@ -5076,6 +5243,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                   />
                   <Label htmlFor="cancelada" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap">Cancelada</Label>
                 </div>
+                )}
                 {/* Checkbox de extension de plazo: solo visible para
                     prestamos tipo "americano" en su ULTIMA cuota. */}
                 {selectedClient &&
@@ -5162,6 +5330,59 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                 </Label>
               </div>
             </div>
+
+            {/* ── Los datos de la renovación ───────────────────────────────
+                Valor que se le entrega hoy y días que se agregan. Debajo, una
+                vista previa APROXIMADA: el cálculo exacto lo hace la base con
+                el cronograma real (scripts/123). */}
+            {renovar && (() => {
+              const x = Number.parseFloat(valorRenovar) || 0
+              const d = Number.parseInt(diasRenovar, 10) || 0
+              const tasa = Number(selectedClient.tasaInteres) || 0
+              const agregado = x * (1 + tasa / 100)
+              const saldoTrasPago = Math.max(0, selectedClient.saldo - (Number.parseFloat(paymentAmount) || 0))
+              const quedaban = Math.max(0, cuotasQueLeQuedan - numCuotas)
+              const n = quedaban + d
+              const nuevoSaldo = saldoTrasPago + agregado
+              return (
+                <div className="space-y-1 rounded-lg border border-blue-200 bg-blue-50/60 px-2 py-1.5">
+                  <div className="grid grid-cols-2 gap-2 md:gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="valorRenovar" className="text-xs font-bold md:text-sm">Valor a renovar</Label>
+                      <Input
+                        id="valorRenovar"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Plata que recibe hoy"
+                        value={mostrarMonto(valorRenovar)}
+                        onChange={(e) => setValorRenovar(leerMonto(e.target.value))}
+                        className={`h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="diasRenovar" className="text-xs font-bold md:text-sm">Días</Label>
+                      <Input
+                        id="diasRenovar"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Días que se agregan"
+                        value={diasRenovar}
+                        onChange={(e) => setDiasRenovar(e.target.value.replace(/\D/g, ""))}
+                        className={`h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`}
+                      />
+                    </div>
+                  </div>
+                  {x > 0 && d > 0 && (
+                    <p className="text-[11px] md:text-sm text-blue-900">
+                      Se entregan <b>${x.toLocaleString("es-CO")}</b>
+                      {tasa > 0 ? ` (+${tasa}%: $${Math.round(agregado).toLocaleString("es-CO")})` : ""}. Nuevo saldo aprox.{" "}
+                      <b>${Math.round(nuevoSaldo).toLocaleString("es-CO")}</b> en {n} cuotas de ~$
+                      {Math.round(nuevoSaldo / Math.max(1, n)).toLocaleString("es-CO")}.
+                    </p>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Total a cobrar cuando se paga tambien la multa */}
             {pagarMulta && selectedClient?.multaPendiente && (

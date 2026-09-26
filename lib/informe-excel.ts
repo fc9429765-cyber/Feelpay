@@ -304,6 +304,32 @@ export async function generarInformeExcel(
     ]
   })
 
+  // LAS RENOVACIONES, en la misma hoja: desde el script 123 son plata que
+  // sale de la caja y el resumen las cuenta como venta. Se marcan con
+  // "RENOVACION" en la columna de frecuencia para distinguirlas.
+  for (const g of gestiones as unknown as (Gestion & { detalle?: Record<string, unknown> | null })[]) {
+    const d = g.detalle
+    if (g.tipo !== "ajuste" || !d || d.clase !== "renovacion") continue
+    const id = String(g.loan_id).replace(/-/g, "")
+    const despues = (d.despues ?? {}) as Record<string, unknown>
+    const antes = (d.antes ?? {}) as Record<string, unknown>
+    ventas.push([
+      vendedor(g.ruta),
+      ` ${id.slice(0, 14)}`,
+      "RENOVACION",
+      ` ${String(g.id).replace(/-/g, "").slice(0, 14)}`,
+      clientesPorLoan.get(g.loan_id) ?? "",
+      nombresPorLoan.get(g.loan_id) ?? "",
+      money(Number(d.valor_entregado) || 0),
+      Number(d.cuotas_nuevas) || 0,
+      Number(d.tasa) || 0,
+      money(Number(d.valor_cuota_nueva) || 0),
+      g.fecha_gestion,
+      Number(d.cuotas_nuevas) || 0,
+      money((Number(despues.valor_a_pagar) || 0) - (Number(antes.pagado) || 0)),
+    ])
+  }
+
   // ── Gastos e Ingresos ────────────────────────────────────────────────────
   // El original pone " RH" detrás del vendedor en estas dos hojas. Se respeta:
   // es lo que distingue una fila de caja de una de calle en sus filtros.
