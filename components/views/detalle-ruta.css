@@ -342,6 +342,13 @@
 .dr-kpi-lbl { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
 .dr-kpi-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .dr-kpi-val { font-weight: 800; font-size: 22px; padding-left: 14px; line-height: 1.2; }
+/* La plata de la tarjeta, debajo del contador. Sin la sangría del
+   contador: esos 14px eran justo los que le faltaban a un "₲1.000.000"
+   para caber en la casilla cuando la vista se reduce. */
+.dr-kpi-monto {
+  font-weight: 700; font-size: 12px; line-height: 1.2;
+  color: var(--dr-text); white-space: nowrap; letter-spacing: -0.02em;
+}
 /* Las tarjetas son botones: abren su detalle en la tabla de abajo. */
 .dr-kpi--btn { text-align: left; cursor: pointer; background: transparent; transition: background-color .15s, border-color .15s, box-shadow .15s; }
 .dr-kpi--btn:hover { background: var(--dr-p100); }

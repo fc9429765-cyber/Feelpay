@@ -547,7 +547,22 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
           .eq("ruta", rutaId)
           .gte("fecha_creacion", `${hoy}T00:00:00-05:00`)
           .lte("fecha_creacion", `${hoy}T23:59:59-05:00`)
-        const ids = ((data ?? []) as { id: string }[]).map((l) => l.id)
+        // Las RENOVACIONES también son ventas desde el script 123: el resumen
+        // las cuenta, así que el detalle tiene que mostrarlas.
+        const { data: renov } = await supabase
+          .from("gestiones")
+          .select("loan_id, detalle")
+          .eq("ruta", rutaId)
+          .eq("fecha_gestion", hoy)
+          .eq("tipo", "ajuste")
+          .eq("estado", "aplicada")
+        const idsRenov = ((renov ?? []) as { loan_id: string; detalle?: { clase?: string } | null }[])
+          .filter((g) => g.detalle?.clase === "renovacion")
+          .map((g) => g.loan_id)
+        const ids = [...new Set([
+          ...((data ?? []) as { id: string }[]).map((l) => l.id),
+          ...idsRenov,
+        ])]
         abrirDetalle("Ventas de hoy", ids, {
           subtitulo: `${ids.length} ${ids.length === 1 ? "venta" : "ventas"}`,
           mostrarValorVenta: true,
@@ -1255,8 +1270,7 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
                         Con la caja ya cerrada el numero deja de moverse y el
                         veredicto si significa algo.
 
-                        Mientras tanto se muestra cuanto falta por cobrar, que
-                        es el dato que sirve para salir a trabajar. Sin meta
+                        Mientras tanto dice "En progreso" con el relojito. Sin meta
                         (`metaAmount === 0`) no hay nada que juzgar ni nada
                         que cobrar, y se dice. */}
                     {metaAmount <= 0 ? (
@@ -1281,11 +1295,21 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
                         </div>
                       </div>
                     ) : !diaCerrado ? (
-                      <p className="text-[11px] leading-tight text-muted-foreground">
-                        {remaining > 0
-                          ? `Por cobrar hoy: ${fmtMonedaCien(remaining)}`
-                          : "Meta alcanzada — falta cerrar la caja"}
-                      </p>
+                      /* EN CURSO: "En progreso" con el relojito, no la cifra
+                         que falta. A pedido del dueño: con la jornada andando
+                         el "Por cobrar hoy: $X" se leía como una deuda del
+                         cobrador; lo que importa ahí es que el día sigue. La
+                         meta y el recaudo ya están justo arriba. */
+                      remaining > 0 ? (
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5 shrink-0 text-info" />
+                          <p className="text-[11px] font-bold leading-tight text-info">En progreso</p>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] leading-tight text-muted-foreground">
+                          Meta alcanzada — falta cerrar la caja
+                        </p>
+                      )
                     ) : collectedAmount >= metaAmount ? (
                       <p className="text-[11px] font-bold leading-tight text-success">
                         Superaste la meta del día
@@ -2049,6 +2073,7 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
         marcados={detalleClientes?.marcados}
         mostrarValorVenta={detalleClientes?.mostrarValorVenta}
         ocultarFicha={detalleClientes?.ocultarFicha}
+        moneda={monedaRuta}
       />
 
       {/* Los pagos del dia. Va aca por la misma razon que el de arriba:
@@ -2073,7 +2098,6 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
         currentUser={{ id: getUsuarioSesion().id ?? 0, nombre: getUsuarioSesion().nombre }}
         titulo="Compartir el informe"
       />
-        moneda={monedaRuta}
 
       {/* Dialog para detalle de Ingresos/Gastos/Retiros */}
       <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>

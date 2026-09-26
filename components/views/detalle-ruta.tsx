@@ -293,6 +293,13 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
   const [debido, setDebido] = useState(0)
   const [cobrado, setCobrado] = useState(0)
   const [cont, setCont] = useState({ pagos: 0, noPagos: 0, ventas: 0, gastos: 0, ingresos: 0, retiros: 0 })
+  /**
+   * LA PLATA DE CADA TARJETA, debajo del contador. Sale de la misma fila de
+   * `resumen_diario_v2` que los contadores, así que cuenta lo mismo (gastos,
+   * ingresos y retiros: solo los aprobados). Los no pagos no mueven plata:
+   * su valor es lo que se dejó de cobrar, la cuota del día de esos clientes.
+   */
+  const [valores, setValores] = useState({ pagos: 0, noPagos: 0, ventas: 0, gastos: 0, ingresos: 0, retiros: 0 })
 
   // Las listas
   const [clientesDia, setClientesDia] = useState<ClienteDia[]>([])
@@ -427,7 +434,7 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
           .eq("loans.ruta", rutaId)
           .neq("loans.estado", "anulado"),
         sb.from("gestiones")
-          .select("id, loan_id, tipo, monto, fecha_hora, latitud, longitud, metodo_pago, observacion, loans:loans(clients:clients(nombre_completo, apodo))")
+          .select("id, loan_id, tipo, monto, fecha_hora, latitud, longitud, metodo_pago, observacion, detalle, loans:loans(clients:clients(nombre_completo, apodo))")
           .eq("ruta", rutaId)
           .eq("fecha_gestion", fecha)
           .eq("estado", "aplicada")
@@ -468,6 +475,10 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
         pagos: n(f.cantidad_pagos), noPagos: n(f.cantidad_no_pagos), ventas: n(f.cantidad_ventas),
         gastos: n(f.cantidad_gastos), ingresos: n(f.cantidad_ingresos), retiros: n(f.cantidad_retiros),
       })
+      const valoresDia = {
+        pagos: n(f.valor_pago), noPagos: 0, ventas: n(f.valor_ventas),
+        gastos: n(f.valor_gastos), ingresos: n(f.valor_ingresos), retiros: n(f.valor_retiros),
+      }
 
       const pagado = new Map<string, number>()
       const visitado = new Set<string>()
@@ -476,10 +487,21 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
       for (const g of (resGest.data ?? []) as unknown as {
         id: string; loan_id: string; tipo: string; monto: number | null; fecha_hora: string
         latitud: number | null; longitud: number | null
+        detalle?: Record<string, unknown> | null
         loans?: { clients?: { nombre_completo?: string | null } | null } | null
       }[]) {
         const m = montoEfectivo(g as never)
         const cliente = g.loans?.clients?.nombre_completo ?? "—"
+        // UNA RENOVACIÓN (scripts/123) es un `ajuste` de monto 0 en el libro,
+        // pero es plata que SALIÓ de la caja: se muestra como tal.
+        if (g.tipo === "ajuste" && g.detalle?.clase === "renovacion") {
+          const entregado = Number(g.detalle.valor_entregado) || 0
+          movs.push({
+            id: `g-${g.id}`, ts: g.fecha_hora, hora: hhmm(g.fecha_hora) || "—",
+            titulo: cliente, detalle: "Renovación", monto: entregado, tono: "bad",
+          })
+          continue
+        }
         if (g.loan_id) {
           visitado.add(g.loan_id)
           if (m !== 0) pagado.set(g.loan_id, (pagado.get(g.loan_id) ?? 0) + m)
@@ -577,6 +599,19 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
         ].filter(Boolean).join(" · "),
         monto: Number(v.valor) || 0,
       }))
+      // Las RENOVACIONES también son ventas: el resumen del día las cuenta
+      // así desde el script 123, y la lista tiene que dar el mismo número que
+      // la tarjeta.
+      type Rx = { id: string; fecha_hora: string; tipo: string; detalle?: Record<string, unknown> | null } & Gx
+      for (const g of (resGest.data ?? []) as unknown as Rx[]) {
+        if (g.tipo !== "ajuste" || g.detalle?.clase !== "renovacion") continue
+        fVentas.push({
+          id: `r-${g.id}`, ts: g.fecha_hora, hora: hhmm(g.fecha_hora) || "—",
+          titulo: cliente(g), sub: apodo(g),
+          detalle: `Renovación · ${Number(g.detalle.cuotas_nuevas) || 0} cuotas`,
+          monto: Number(g.detalle.valor_entregado) || 0,
+        })
+      }
 
       const porHora = (a: FilaKpi, b: FilaKpi) => a.ts.localeCompare(b.ts)
       setFilasKpi({
@@ -603,6 +638,11 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
       // LA MORA sale del estado derivado (`v_loan_financiero`), nunca de
       // `payment_plan.estado`. Es la mora de HOY: la vista no se puede pedir
       // "a tal fecha", así que en un día pasado muestra la situación actual.
+      // Lo que se dejó de cobrar: la cuota del día de cada cliente que no pagó.
+      const cuotaDelDia = new Map(plan.map((p) => [p.loan_id, Number(p.valor_cuota) || 0]))
+      valoresDia.noPagos = fNoPagos.reduce((t, fila) => t + (cuotaDelDia.get(fila.id) ?? 0), 0)
+      setValores(valoresDia)
+
       const loanIds = [...new Set(plan.map((p) => p.loan_id))]
       const mora = new Map<string, { cuotas: number; saldo: number }>()
       if (loanIds.length) {
@@ -677,13 +717,13 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
     [rutas, qRuta],
   )
 
-  const kpis: { id: KpiId; label: string; valor: number; color: string }[] = [
-    { id: "pagos", label: "Pagos", valor: cont.pagos, color: "var(--dr-success)" },
-    { id: "noPagos", label: "No pagos", valor: cont.noPagos, color: "var(--dr-danger)" },
-    { id: "ventas", label: "Ventas", valor: cont.ventas, color: "var(--dr-primary)" },
-    { id: "gastos", label: "Gastos", valor: cont.gastos, color: "var(--dr-danger)" },
-    { id: "ingresos", label: "Ingresos", valor: cont.ingresos, color: "var(--dr-teal)" },
-    { id: "retiros", label: "Retiros", valor: cont.retiros, color: "var(--dr-purple)" },
+  const kpis: { id: KpiId; label: string; valor: number; monto: number; color: string }[] = [
+    { id: "pagos", label: "Pagos", valor: cont.pagos, monto: valores.pagos, color: "var(--dr-success)" },
+    { id: "noPagos", label: "No pagos", valor: cont.noPagos, monto: valores.noPagos, color: "var(--dr-danger)" },
+    { id: "ventas", label: "Ventas", valor: cont.ventas, monto: valores.ventas, color: "var(--dr-primary)" },
+    { id: "gastos", label: "Gastos", valor: cont.gastos, monto: valores.gastos, color: "var(--dr-danger)" },
+    { id: "ingresos", label: "Ingresos", valor: cont.ingresos, monto: valores.ingresos, color: "var(--dr-teal)" },
+    { id: "retiros", label: "Retiros", valor: cont.retiros, monto: valores.retiros, color: "var(--dr-purple)" },
   ]
   const kpiSel = kpis.find((k) => k.id === detalleKpi) ?? null
   const filasSel = detalleKpi ? filasKpi[detalleKpi] : []
@@ -1039,6 +1079,7 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
                   >
                     <div className="dr-kpi-lbl"><span className="dr-kpi-dot" style={{ background: k.color }} />{k.label}</div>
                     <div className="dr-kpi-val" style={{ color: k.color }}>{k.valor}</div>
+                    <div className="dr-kpi-monto" title={money(k.monto)}>{money(k.monto)}</div>
                   </button>
                 ))}
               </div>
