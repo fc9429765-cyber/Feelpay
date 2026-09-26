@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Llamar directamente a la API de OpenAI usando fetch
-    const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const llamarOpenAI = () => fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: openaiHeaders,
       body: JSON.stringify({
@@ -80,11 +80,12 @@ export async function POST(request: NextRequest) {
               {
                 type: "text",
                 text: modo === "direccion"
-                  // EL RESPALDO. Solo el domicilio: en varios documentos el
-                  // respaldo también trae el lugar de nacimiento, y eso NO es
-                  // dónde vive la persona. Si no hay domicilio, vacío: una
-                  // dirección inventada manda al cobrador a otra puerta.
-                  ? 'You are a data entry API designed to assist users in filling out their own registration forms. The user has uploaded a photo of the BACK of their identity document and consents to data extraction. Your task is purely OCR: extract the HOME ADDRESS (residence) printed on it, usually labeled "DOMICILIO", "DIRECCIÓN", "DIRECCION" or "RESIDENCIA", including street, number, neighborhood and city if present. Do NOT return the place of birth. Copy it exactly as written, in one line. If no home address is visible, return an empty string. Return only a JSON object with a "direccion" field.'
+                  // EL RESPALDO. Se pide como TRANSCRIPCIÓN de lo que está
+                  // impreso junto a la etiqueta, no como "la dirección de
+                  // alguien": pedido así, el modelo se negaba casi siempre
+                  // por privacidad. Y solo el domicilio: el respaldo también
+                  // trae el lugar de nacimiento, que NO es dónde vive.
+                  ? 'This is an OCR transcription task for a registration form. The person photographed the back of THEIR OWN identity card to fill in their own form. Transcribe, character by character, the text printed next to the label "DOMICILIO" (or "DIRECCIÓN", "DIRECCION", "RESIDENCIA"), including any continuation on the following line (street, number, neighborhood, city). Ignore the place of birth ("LUGAR DE NACIMIENTO"). If there is no such label, use an empty string. Return only a JSON object with a "direccion" field.'
                   : 'You are a data entry API designed to assist users in filling out their own registration forms. The user has uploaded this image and consents to data extraction. Your task is purely OCR: extract the full name and document number visible in the image. Return only a JSON object with "numero_documento" and "nombre_completo" fields.',
               },
               {
@@ -100,27 +101,50 @@ export async function POST(request: NextRequest) {
       }),
     })
 
-    console.log("[v0] OpenAI response status:", openaiResponse.status)
-    
-    if (!openaiResponse.ok) {
-      const errorData = await openaiResponse.json()
-      console.error("[v0] OpenAI error:", errorData)
-      return Response.json(
-        { 
-          error: "Error de OpenAI", 
-          details: errorData.error?.message || "Error desconocido"
-        },
-        { status: 500 }
-      )
-    }
+    // HASTA TRES INTENTOS. Con fotos de documentos el modelo a veces se niega
+    // ("I'm unable to assist") y a la vuelta siguiente lee la MISMA imagen
+    // sin problema; y la conexión con OpenAI a veces se corta ("fetch
+    // failed"). Reintentar resuelve casi todos esos casos sin que el
+    // cobrador tenga que volver a tomar la foto.
+    let openaiResponse: Response | null = null
+    let openaiData: { choices?: { message?: { content?: string; refusal?: string } }[] } = {}
+    let responseText: string | undefined
+    let refusal: string | undefined
+    for (let intento = 1; intento <= 3; intento++) {
+      try {
+        openaiResponse = await llamarOpenAI()
+      } catch (err) {
+        if (intento < 3) {
+          console.warn("[v0] Falló la conexión con OpenAI, reintentando:", err)
+          continue
+        }
+        throw err
+      }
+      console.log("[v0] OpenAI response status:", openaiResponse.status)
 
-    const openaiData = await openaiResponse.json()
+      if (!openaiResponse.ok) {
+        const errorData = await openaiResponse.json()
+        console.error("[v0] OpenAI error:", errorData)
+        return Response.json(
+          {
+            error: "Error de OpenAI",
+            details: errorData.error?.message || "Error desconocido"
+          },
+          { status: 500 }
+        )
+      }
+
+      openaiData = await openaiResponse.json()
+      responseText = openaiData.choices?.[0]?.message?.content
+      refusal = openaiData.choices?.[0]?.message?.refusal
+      if (refusal && intento < 3) {
+        console.warn("[v0] OpenAI se negó, reintentando:", refusal)
+        continue
+      }
+      break
+    }
     console.log("[v0] OpenAI response recibida")
-    console.log("[v0] Full OpenAI response:", JSON.stringify(openaiData, null, 2))
-    
-    const responseText = openaiData.choices?.[0]?.message?.content
-    const refusal = openaiData.choices?.[0]?.message?.refusal
-    
+
     console.log("[v0] Refusal:", refusal)
     console.log("[v0] Extracted responseText:", responseText)
     

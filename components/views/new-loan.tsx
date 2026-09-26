@@ -12,7 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Barcode as BarCode, X, Loader2, UserPlus, AlertCircle, CheckCircle2, ChevronsUpDown, Check, Paperclip, Trash2 } from "lucide-react"
+import { Barcode as BarCode, X, Loader2, UserPlus, AlertCircle, CheckCircle2, ChevronsUpDown, Check, Paperclip, Trash2, ChevronLeft, ChevronDown, User, Store, CircleDollarSign, Camera, Lock, MapPin, Info, MessageCircle, ArrowLeftRight, Shuffle, Calculator, SlidersHorizontal } from "lucide-react"
+import "./new-loan.css"
 // Ya no usamos los helpers de lib/database (createClient/createLoan/
 // createPaymentPlan): la creacion de venta corre ahora en una sola
 // transaccion via la RPC `crear_venta_atomica` que evita los problemas
@@ -163,6 +164,30 @@ type NewLoanProps = {
   /** Se llama después de cada venta registrada, para refrescar lo de afuera. */
   onCreated?: () => void
 }
+
+// ── Piezas del diseño de Crear Venta (CrearVenta.jsx) ─────────────────────
+// Van FUERA del componente: definidas adentro, React las vería como un
+// componente nuevo en cada tecla y los campos perderían el foco al escribir.
+const CvLabel = ({ children, req, opt }: { children: React.ReactNode; req?: boolean; opt?: string }) => (
+  <span className="cv-label">
+    {children}
+    {req && <b className="cv-req">*</b>}
+    {opt && <span className="cv-opt">{opt}</span>}
+  </span>
+)
+const Candado = () => <Lock size={20} fill="#6b7480" color="#6b7480" />
+const Pin = () => <MapPin size={24} fill="#1f6fe0" color="#fff" strokeWidth={1.5} />
+const Seccion = ({ icon: Icono, relleno, title, children }: {
+  icon: React.ElementType; relleno?: boolean; title: string; children: React.ReactNode
+}) => (
+  <section className="cv-section">
+    <div className="cv-band">
+      <Icono size={32} fill="#1f6fe0" color={relleno ? "#fff" : "#1f6fe0"} strokeWidth={1.6} />
+      <h2>{title}</h2>
+    </div>
+    <div className="cv-section-body">{children}</div>
+  </section>
+)
 
 export function NewLoan({
   preSelectedClientId, currentRutaId = 1, rutaPais = "", onCancel,
@@ -337,16 +362,36 @@ export function NewLoan({
    */
   const [apodo2, setApodo2] = useState("")
   const [apodoElegido, setApodoElegido] = useState<1 | 2>(1)
-  const [sector, setSector] = useState("")
+  /**
+   * LA DIRECCIÓN DE RESIDENCIA, aparte de la Dirección.
+   *
+   * "Dirección" es donde se le cobra (el negocio, casi siempre). La de
+   * residencia es donde VIVE, la que trae impresa el respaldo del documento:
+   * se llena sola al leerlo y se guarda en `clients.direccion_residencia`
+   * (scripts/122). Es opcional.
+   */
+  const [direccionResidencia, setDireccionResidencia] = useState("")
+  /**
+   * EL DISEÑO NUEVO DE CREAR VENTA (scripts/124).
+   *   · Dirección de DOMICILIO, si es diferente de la del DNI.
+   *   · Foto del LOCAL: opcional, se sube al elegirla.
+   *   · Venta MIXTA: cuánto va en efectivo y cuánto por transferencia.
+   *   · El modal de la simulación de amortización.
+   */
+  const [direccionDomicilio, setDireccionDomicilio] = useState("")
+  const [fotoLocalUrl, setFotoLocalUrl] = useState<string | null>(null)
+  const [subiendoFotoLocal, setSubiendoFotoLocal] = useState(false)
+  const [ventaEfectivo, setVentaEfectivo] = useState("")
+  const [ventaTransferencia, setVentaTransferencia] = useState("")
+  const [showSimulacion, setShowSimulacion] = useState(false)
   const [procesandoCedula, setProcessandoCedula] = useState(false)
   /**
    * LEER LA DIRECCIÓN DEL RESPALDO DE LA CÉDULA.
    *
    * Opcional, con un check: al activarlo aparece un segundo botón para
    * fotografiar el respaldo del documento, se lee el domicilio y se escribe
-   * en el campo Dirección. La dirección sigue siendo editable: lo que lee la
-   * IA es una propuesta, y el domicilio del documento puede no ser donde la
-   * persona vive hoy.
+   * en el campo Dirección de residencia (no en Dirección, que es donde se le
+   * cobra). Sigue siendo editable: lo que lee la IA es una propuesta.
    *
    * La foto del respaldo NO se guarda: solo se usa para leer la dirección.
    */
@@ -411,9 +456,6 @@ export function NewLoan({
   //    poder validar "obligatoriedad" y resaltar errores en la UI. ──
   const [direccion, setDireccion] = useState("")
   const [tipoComercio, setTipoComercio] = useState("")
-  const [ref1Nombre, setRef1Nombre] = useState("")
-  const [ref1Telefono, setRef1Telefono] = useState("")
-  const [ref1Direccion, setRef1Direccion] = useState("")
   // Set de claves con errores de campo obligatorio. Se llena cuando el
   // usuario intenta enviar y faltan datos; cada Input/Select consulta este
   // set para pintar borde rojo. Se limpia automaticamente cuando el campo
@@ -521,6 +563,36 @@ export function NewLoan({
       })
     } finally {
       setSubiendoComprobante(false)
+    }
+  }
+
+  /** LA FOTO DEL LOCAL. Opcional; se sube al elegirla, como el comprobante. */
+  const handleFotoLocal = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file) return
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Formato no compatible", description: "Sube una foto (JPG o PNG).", variant: "destructive" })
+      return
+    }
+    setSubiendoFotoLocal(true)
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      fd.append("folder", `locales/${currentRutaId}`)
+      const res = await fetch("/api/upload-photo", { method: "POST", body: fd })
+      const json = await res.json()
+      if (!json.success) throw new Error(json.error ?? "No se pudo subir la foto")
+      setFotoLocalUrl(json.url)
+    } catch (err) {
+      console.error("[v0] Error subiendo la foto del local:", err)
+      toast({
+        title: "No se pudo subir la foto del local",
+        description: err instanceof Error ? err.message : "Intenta de nuevo",
+        variant: "destructive",
+      })
+    } finally {
+      setSubiendoFotoLocal(false)
     }
   }
 
@@ -1061,7 +1133,7 @@ export function NewLoan({
    */
   const ESPERA_CEDULA_MS = 45000
 
-  /** La foto del respaldo: se lee el domicilio y va al campo Dirección. */
+  /** La foto del respaldo: se lee el domicilio y va a Dirección de residencia. */
   const handleRespaldoCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     e.target.value = ""
@@ -1090,14 +1162,13 @@ export function NewLoan({
       if (!dir) {
         toast({
           title: "No se encontró la dirección",
-          description: "Vuelve a tomar la foto del respaldo bien enfocada y sin reflejos, o escribe la dirección a mano.",
+          description: "Vuelve a tomar la foto del respaldo bien enfocada y sin reflejos, o escribe la dirección de residencia a mano.",
           variant: "destructive",
         })
         return
       }
-      setDireccion(dir)
-      clearFieldError("direccion")
-      toast({ title: "Dirección leída", description: "Revísala en el campo Dirección y corrígela si hace falta." })
+      setDireccionResidencia(dir)
+      toast({ title: "Dirección de residencia leída", description: "Revísala en su campo y corrígela si hace falta." })
     } catch (error) {
       const abortado = error instanceof DOMException && error.name === "AbortError"
       toast({
@@ -1368,21 +1439,26 @@ export function NewLoan({
     setDocumento("")
     setNombreCompleto("")
     setApodo("")
-    setSector("")
+    setDireccionResidencia("")
+    setDireccionDomicilio("")
+    setFotoLocalUrl(null)
     setTelefono("")
     setTelefono2("")
     setTelefonoError("")
     setTelefono2Error("")
     setDireccion("")
     setTipoComercio("")
-    setRef1Nombre("")
-    setRef1Telefono("")
-    setRef1Direccion("")
     setCedulaImage(null)
   }
 
   const resetFormularioVenta = () => {
     setLeerDireccion(false)
+    // La evidencia es de ESTA venta: si quedara, la siguiente salía con la
+    // foto de la anterior.
+    setComprobanteUrl(null)
+    setVentaEfectivo("")
+    setVentaTransferencia("")
+    setShowSimulacion(false)
     setValor("")
     setSaldo("")
     setValorAPagar("")
@@ -1438,8 +1514,8 @@ export function NewLoan({
       //
       // Campos obligatorios (segun regla de negocio):
       // - Cliente NUEVO: apodo, telefono, direccion, tipoComercio,
-      //   nombreCompleto (auto desde cedula), ref1Nombre, ref1Telefono,
-      //   ref1Direccion
+      //   nombreCompleto (auto desde cedula). El sector y la referencia ya
+      //   no se piden en la venta (a pedido del dueño).
       // - Cliente EXISTENTE: solo se valida que se haya seleccionado
       // - Datos del prestamo: valor, dias (nro cuotas), frecuenciaPago
       //   (+ tasaInteres y tipoAmortizacion si NO es prestamo empleado)
@@ -1453,15 +1529,14 @@ export function NewLoan({
         telefono: "Teléfono",
         direccion: "Dirección",
         tipoComercio: "Tipo de comercio",
-        ref1Nombre: "Nombre de referencia 1",
-        ref1Telefono: "Teléfono de referencia 1",
-        ref1Direccion: "Dirección de referencia 1",
         amount: "Valor del préstamo",
         dias: "Número de cuotas",
         frequency: "Frecuencia de pago",
         diaSemana: "Día de cobro (obligatorio para frecuencia Semanal)",
         tasaInteres: "Tasa de interés",
         tipoAmortizacion: "Método de interés",
+        evidencia: "Evidencia de entrega del crédito (foto)",
+        mixto: "Valores en efectivo y transferencia (deben sumar el valor)",
       }
 
       const errors = new Set<string>()
@@ -1495,6 +1570,18 @@ export function NewLoan({
       if (!prestamoEmpleado) {
         if (!tasaInteres) errors.add("tasaInteres")
         if (!tipoAmortizacion) errors.add("tipoAmortizacion")
+      }
+      // LA EVIDENCIA ES OBLIGATORIA EN TODA VENTA (decisión del dueño): en
+      // efectivo, la foto entregando el dinero; en transferencia, el
+      // comprobante. Se guarda en `comprobante_url`.
+      if (!comprobanteUrl) errors.add("evidencia")
+      // MIXTA: las dos partes con plata, y entre las dos el valor exacto.
+      if (tipoVenta === "mixto") {
+        const ef = Number.parseFloat(ventaEfectivo) || 0
+        const tr = Number.parseFloat(ventaTransferencia) || 0
+        if (ef <= 0 || tr <= 0 || Math.round(ef + tr) !== Math.round(Number.parseFloat(valor) || 0)) {
+          errors.add("mixto")
+        }
       }
 
       if (errors.size > 0) {
@@ -1582,7 +1669,10 @@ export function NewLoan({
           nombre_completo: nombreCompleto.trim().toUpperCase(),
           apodo: apodo || null,
           apodo_2: apodo2.trim() || null,
-          sector: sector || null,
+          direccion_residencia: direccionResidencia || null,
+          // Donde vive si no es la del DNI, y la foto del local (scripts/124).
+          direccion_domicilio: direccionDomicilio.trim().toUpperCase() || null,
+          foto_local_url: fotoLocalUrl,
           // El numero viaja COMPLETO, con su indicativo. Sin el, un celular de
           // otro pais no se puede marcar desde la ruta.
           telefono: telefono ? `${indicativo} ${telefono}` : null,
@@ -1591,9 +1681,6 @@ export function NewLoan({
           // (antes se enviaban como null porque eran inputs no controlados).
           direccion: direccion || null,
           tipo_comercio: tipoComercio || null,
-          ref1_nombre: ref1Nombre || null,
-          ref1_telefono: ref1Telefono || null,
-          ref1_direccion: ref1Direccion || null,
           cedula_image_url: cedulaImage || null,
         }
       } else {
@@ -1784,12 +1871,17 @@ export function NewLoan({
         frecuencia_pago: frecuenciaPago,
         dia_semana: diaSemana || null,
         tipo_venta: tipoVenta,
-        // El comprobante de la transferencia (scripts/115). Null en efectivo.
+        // La EVIDENCIA de la entrega (scripts/115): foto del dinero en
+        // efectivo o comprobante en transferencia. Obligatoria.
         comprobante_url: comprobanteUrl,
         // Con cual de los dos apodos se ve ESTE prestamo. 1 = el de siempre.
         apodo_elegido: apodoElegido,
         prestamo_empleado: prestamoEmpleado,
-        cuenta_id: tipoVenta === "transferencia" && cuentaId ? cuentaId : null,
+        cuenta_id: (tipoVenta === "transferencia" || tipoVenta === "mixto") && cuentaId ? cuentaId : null,
+        // Venta MIXTA: cuánto se entregó de cada forma (scripts/124). La caja
+        // descuenta el valor completo igual que siempre.
+        venta_efectivo: tipoVenta === "mixto" ? Number.parseFloat(ventaEfectivo) || 0 : null,
+        venta_transferencia: tipoVenta === "mixto" ? Number.parseFloat(ventaTransferencia) || 0 : null,
         fecha_primer_pago: fechaPrimerPago,
         // Fecha del DISPOSITIVO: si la venta se sincroniza mañana, el abono
         // inicial debe quedar en el día en que el cliente entregó la plata,
@@ -2131,8 +2223,14 @@ export function NewLoan({
     return diaria && esDomingo ? sumarDias(base, 1) : base
   })()
 
+  // ── Piezas del diseño (CrearVenta.jsx) ─────────────────────────────────
+  const cvErr = (id: string) => (formErrors.has(id) ? " cv-input--err" : "")
+  const valorNumVista = Number.parseFloat(valor) || 0
+  const esTransfer = tipoVenta === "transferencia" || tipoVenta === "mixto"
+
   return (
-    <div className="space-y-3 md:space-y-6">
+    <div className="cv-root">
+      <div className="cv-frame">
       {/* ── ESTA VENTA NO ES DE HOY ─────────────────────────────────────
           Va de primero y no se va nunca. El formulario es largo: quien lo
           llena de arriba abajo pierde de vista lo que eligió al abrirlo, y
@@ -2303,10 +2401,17 @@ export function NewLoan({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className="flex items-center justify-between">
-        <h2 className="text-base md:text-2xl font-bold text-card-foreground">Nueva Venta</h2>
+
+
+      {/* ── Encabezado ─────────────────────────────────────────────────── */}
+      <header className="cv-header">
+        <button type="button" className="cv-back" onClick={onCancel} aria-label="Volver">
+          <ChevronLeft size={28} strokeWidth={1.75} />
+        </button>
+        <h1 className="cv-title">Crear Venta</h1>
         <button
           type="button"
+          className={`cv-new${isNewClient ? " cv-new--on" : ""}`}
           onClick={() => {
             // Se cambia de cliente: el formulario se limpia por completo.
             // Antes los datos del cliente anterior quedaban vivos en el
@@ -2315,142 +2420,18 @@ export function NewLoan({
             resetFormularioVenta()
             setIsNewClient(!isNewClient)
           }}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-sm md:text-base transition-all ${
-            isNewClient
-              ? "bg-primary text-primary-foreground shadow-md"
-              : "bg-sky-100 text-sky-700 hover:bg-sky-200 border border-sky-300"
-          }`}
         >
-          <UserPlus className="h-5 w-5 md:h-6 md:w-6" />
-          Nuevo cliente
+          <UserPlus size={26} strokeWidth={1.75} />
+          {isNewClient ? "Cliente existente" : "Nuevo cliente"}
         </button>
-      </div>
+      </header>
 
-      {/* Botón grande para capturar cédula - solo visible cuando es nuevo cliente */}
-      {isNewClient && (
-        <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 md:p-8 border-2 border-blue-200 shadow-md">
-          <input type="file" accept="image/*" capture="environment" onChange={handleCedulaCapture} className="hidden" id="cedula-upload" />
-          <Label htmlFor="cedula-upload" className="cursor-pointer block">
-            <div className="flex flex-col items-center gap-3 md:gap-4">
-              <div className="flex items-center justify-center">
-                <Button
-                  type="button"
-                  size="lg"
-                  variant={cedulaImage ? "default" : "outline"}
-                  className={`h-16 w-16 md:h-24 md:w-24 rounded-full shadow-lg transition-all ${
-                    cedulaImage 
-                      ? "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white border-0" 
-                      : "bg-white border-2 border-blue-400 hover:bg-blue-50"
-                  } ${procesandoCedula ? "opacity-60 cursor-wait animate-pulse" : "hover:shadow-xl"}`}
-                  asChild
-                  disabled={procesandoCedula}
-                >
-                  <span title={procesandoCedula ? "Procesando cédula..." : "Toca para capturar tu cédula"}>
-                    <BarCode className={`${cedulaImage ? "h-12 w-12 md:h-16 md:w-16" : "h-10 w-10 md:h-14 md:w-14"}`} />
-                  </span>
-                </Button>
-              </div>
-              <div className="text-center">
-                <p className="text-xs md:text-base font-semibold text-blue-900">
-                  {procesandoCedula
-                    ? "Procesando..."
-                    : cedulaImage
-                      ? "Cédula capturada"
-                      : cedulaObligatoria
-                        ? "Captura tu cédula"
-                        : "Captura la cédula (opcional)"}
-                </p>
-                <p className="text-[10px] md:text-sm text-blue-700">
-                  {procesandoCedula
-                    ? "Leyendo información..."
-                    : cedulaImage
-                      ? "Toca para cambiar"
-                      : cedulaObligatoria
-                        ? "Toca el botón para fotografiar"
-                        : "O escribe el documento y el nombre aquí abajo"}
-                </p>
-              </div>
-              {cedulaImage && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="hover:text-red-700 hover:bg-red-50 text-popover-foreground"
-                  onClick={clearCedulaImage}
-                >
-                  <X className="h-4 w-4 mr-1" />
-                  Cambiar
-                </Button>
-              )}
-            </div>
-          </Label>
-
-          {/* ── La dirección, del respaldo del documento ───────────────── */}
-          <div className="mt-3 border-t border-blue-200 pt-3">
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="leer-direccion"
-                checked={leerDireccion}
-                onCheckedChange={(v) => setLeerDireccion(v === true)}
-                className="h-4 w-4 border-2 border-blue-400"
-              />
-              <Label htmlFor="leer-direccion" className="cursor-pointer text-xs font-semibold text-blue-900 md:text-sm">
-                Leer la dirección del respaldo de la cédula
-              </Label>
-            </div>
-            {leerDireccion && (
-              <div className="mt-2 flex flex-col items-center gap-1">
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={handleRespaldoCapture}
-                  className="hidden"
-                  id="cedula-respaldo-upload"
-                  disabled={procesandoRespaldo}
-                />
-                <Label htmlFor="cedula-respaldo-upload" className="cursor-pointer">
-                  <span
-                    className={`inline-flex items-center gap-2 rounded-lg border-2 border-blue-400 bg-white px-4 py-2 text-xs font-semibold text-blue-900 shadow-sm md:text-sm ${
-                      procesandoRespaldo ? "cursor-wait opacity-60" : "hover:bg-blue-50"
-                    }`}
-                  >
-                    {procesandoRespaldo ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarCode className="h-4 w-4" />}
-                    {procesandoRespaldo ? "Leyendo la dirección…" : "Fotografiar el respaldo"}
-                  </span>
-                </Label>
-                <p className="text-center text-[10px] text-blue-700 md:text-xs">
-                  La dirección que se lea se escribe en el campo Dirección, y se puede corregir.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Vista previa de cédula */}
-      {cedulaImage && (
-        <div className="bg-card rounded-lg p-3 md:p-4 border border-border">
-          <img src={cedulaImage || "/placeholder.svg"} alt="Cédula" className="max-h-40 md:max-h-64 mx-auto rounded" />
-        </div>
-      )}
-
-      <Card>
-        <CardHeader className="p-2 md:p-6">
-          <CardTitle className="text-xs md:text-base">
-            {isNewClient ? "Información del Nuevo Cliente" : "Información del Préstamo"}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 md:space-y-4 p-2 md:p-6">
-          {/* Va ARRIBA DE TODO, antes de los datos del cliente: es la
-              primera decision de la venta —¿esta es una venta normal?— y
-              gobierna lo que se pide mas abajo. Enterrada al final del
-              formulario, habia que llegar hasta ahi para saber que existia.
-
-              Los dos recuadros que habilita siguen en su lugar, junto al resto
-              de las condiciones del credito. */}
-          {/* La llave de las dos excepciones. Apagada —que es lo normal— el
-              formulario no muestra ninguna de las dos. */}
+      <div className="cv-body">
+        {/* ── Condiciones especiales ──────────────────────────────────────
+            Sigue arriba de todo: es la primera decisión de la venta (¿es
+            normal, arranca hoy o ya venía corriendo?) y gobierna lo que se
+            pide más abajo. */}
+        <div className="cv-legacy">
           <label
             htmlFor="condicionesEspeciales"
             className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-all border ${
@@ -2487,405 +2468,10 @@ export function NewLoan({
             </span>
           </label>
 
-          {isNewClient ? (
-            // New client form
-            <>
-              <div className="grid gap-2 md:gap-4 grid-cols-1 md:grid-cols-3">
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="documento" className="text-[11px] md:text-sm">
-                    Documento <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="documento"
-                    placeholder={datosBloqueados ? "Lo llena la cédula" : "Número de documento"}
-                    value={documento}
-                    onChange={(e) => {
-                      setDocumento(e.target.value)
-                      clearFieldError("documento")
-                    }}
-                    readOnly={datosBloqueados}
-                    disabled={procesandoCedula}
-                    className={`h-8 md:h-10 text-[11px] md:text-sm ${datosBloqueados ? "bg-muted" : ""} ${errCls("documento")}`}
-                  />
-                </div>
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="nombreCompleto" className="text-[11px] md:text-sm">
-                    Nombre y apellido completo <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="nombreCompleto"
-                    placeholder={datosBloqueados ? "Lo llena la cédula" : "Nombre completo"}
-                    value={nombreCompleto}
-                    onChange={(e) => {
-                      setNombreCompleto(e.target.value)
-                      clearFieldError("nombreCompleto")
-                    }}
-                    readOnly={datosBloqueados}
-                    disabled={procesandoCedula}
-                    className={`h-8 md:h-10 text-[11px] md:text-sm ${datosBloqueados ? "bg-muted" : ""} ${errCls("nombreCompleto")}`}
-                  />
-                </div>
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="apodo" className="text-[11px] md:text-sm">
-                    Apodo <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="apodo"
-                    placeholder="Apodo o referencia"
-                    value={apodo}
-                    onChange={(e) => {
-                      setApodo(e.target.value.toUpperCase())
-                      clearFieldError("apodo")
-                    }}
-                    className={`h-8 md:h-10 text-[11px] md:text-sm uppercase ${errCls("apodo")}`}
-                  />
-                </div>
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="apodo2" className="text-[11px] md:text-sm">
-                    Apodo 2 <span className="font-normal text-muted-foreground">(opcional)</span>
-                  </Label>
-                  <Input
-                    id="apodo2"
-                    placeholder="Otro nombre con el que se le conoce"
-                    value={apodo2}
-                    onChange={(e) => setApodo2(e.target.value.toUpperCase())}
-                    className="h-8 md:h-10 text-[11px] md:text-sm uppercase"
-                  />
-                </div>
-              </div>
-
-              {/* CON CUAL DE LOS DOS SE VE ESTE PRESTAMO.
-                  Solo aparece cuando hay dos: con uno solo no hay nada que
-                  elegir y el selector seria una pregunta con una sola
-                  respuesta. Lo elegido manda en TODA la gestion del credito
-                  —lista de cobro, recibo, extracto— y se puede cambiar
-                  despues desde Ver Ventas. */}
-              {apodo.trim() && apodo2.trim() &&
-                apodo.trim().toLowerCase() !== apodo2.trim().toLowerCase() && (
-                <div className="space-y-1 md:space-y-2">
-                  <Label className="text-[11px] md:text-sm">¿Con cuál apodo se verá este préstamo?</Label>
-                  <div className="flex gap-2">
-                    {([1, 2] as const).map((n) => (
-                      <Button
-                        key={n}
-                        type="button"
-                        variant={apodoElegido === n ? "default" : "outline"}
-                        onClick={() => setApodoElegido(n)}
-                        className="h-8 md:h-10 flex-1 text-[11px] md:text-sm justify-start truncate"
-                      >
-                        {n === 1 ? apodo.trim() : apodo2.trim()}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="grid gap-2 md:gap-4 grid-cols-2 md:grid-cols-4">
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="telefono" className="text-[10px] md:text-sm">
-                    Teléfono <span className="text-red-500">*</span>
-                    {requiredPhoneDigits > 0 && (
-                      <span className="ml-1 text-muted-foreground">({requiredPhoneDigits} dígitos)</span>
-                    )}
-                  </Label>
-                  {/* El indicativo va PEGADO al numero, no en su propia
-                      casilla suelta: son un solo dato y separarlos invita a
-                      llenar uno y olvidar el otro. Ancho fijo para que el
-                      numero se quede con el espacio, que es lo que se teclea. */}
-                  <div className="flex gap-1">
-                    <Select value={indicativo} onValueChange={cambiarIndicativo}>
-                      <SelectTrigger
-                        aria-label="Indicativo del país"
-                        className="h-7 w-[68px] shrink-0 px-2 text-[10px] md:h-10 md:w-[88px] md:text-sm"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {INDICATIVOS.map((i) => (
-                          <SelectItem key={i.codigo} value={i.codigo} className="text-[11px] md:text-sm">
-                            {i.codigo} · {i.pais}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      id="telefono"
-                      placeholder={`${requiredPhoneDigits} dígitos`}
-                      type="tel"
-                      value={telefono}
-                      maxLength={requiredPhoneDigits}
-                      onChange={(e) => {
-                        const val = e.target.value.replace(/\D/g, "")
-                        setTelefono(val)
-                        validatePhone(val, "tel1")
-                        if (val) clearFieldError("telefono")
-                      }}
-                      className={`h-7 flex-1 min-w-0 md:h-10 text-[10px] md:text-sm ${telefonoError ? "border-red-500 focus-visible:ring-red-500" : ""} ${errCls("telefono")}`}
-                    />
-                  </div>
-                  {telefonoError && (
-                    <p className="text-[9px] md:text-xs text-red-500">{telefonoError}</p>
-                  )}
-                </div>
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="telefono2" className="text-[10px] md:text-sm">
-                    Teléfono 2
-                    {requiredPhoneDigits > 0 && (
-                      <span className="ml-1 text-muted-foreground">({requiredPhoneDigits} dígitos)</span>
-                    )}
-                  </Label>
-                  <Input
-                    id="telefono2"
-                    placeholder={`${requiredPhoneDigits} dígitos (opcional)`}
-                    type="tel"
-                    value={telefono2}
-                    maxLength={requiredPhoneDigits}
-                    onChange={(e) => {
-                      const val = e.target.value.replace(/\D/g, "")
-                      setTelefono2(val)
-                      validatePhone(val, "tel2")
-                    }}
-                    className={`h-7 md:h-10 text-[10px] md:text-sm ${telefono2Error ? "border-red-500 focus-visible:ring-red-500" : ""}`}
-                  />
-                  {telefono2Error && (
-                    <p className="text-[9px] md:text-xs text-red-500">{telefono2Error}</p>
-                  )}
-                </div>
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="direccion" className="text-[10px] md:text-sm">
-                    Dirección <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="direccion"
-                    placeholder="Dirección completa"
-                    value={direccion}
-                    onChange={(e) => {
-                      setDireccion(e.target.value.toUpperCase())
-                      clearFieldError("direccion")
-                    }}
-                    className={`h-7 md:h-10 text-[10px] md:text-sm uppercase ${errCls("direccion")}`}
-                  />
-                </div>
-                <div className="space-y-1 md:space-y-2">
-                  <Label htmlFor="sector" className="text-[10px] md:text-sm">
-                    Sector
-                  </Label>
-                  <Input
-                    id="sector"
-                    placeholder="Ej: Centro, Norte, Sur, etc."
-                    value={sector}
-                    onChange={(e) => setSector(e.target.value.toUpperCase())}
-                    className="h-7 md:h-10 text-[10px] md:text-sm uppercase"
-                  />
-                </div>
-              </div>
-              <div className="space-y-1 md:space-y-2">
-                <Label htmlFor="tipoComercio" className="text-[10px] md:text-sm">
-                  Tipo de comercio <span className="text-red-500">*</span>
-                </Label>
-                <Input
-                  id="tipoComercio"
-                  placeholder="Ej: Tienda, Restaurante, etc."
-                  value={tipoComercio}
-                  onChange={(e) => {
-                    setTipoComercio(e.target.value.toUpperCase())
-                    clearFieldError("tipoComercio")
-                  }}
-                  className={`h-7 md:h-10 text-[10px] md:text-sm uppercase ${errCls("tipoComercio")}`}
-                />
-              </div>
-
-              <div className="pt-2 md:pt-4">
-                <h3 className="text-[10px] md:text-sm font-semibold mb-2 md:mb-3">
-                  Referencia 1 <span className="font-normal text-muted-foreground">(opcional)</span>
-                </h3>
-                <div className="space-y-2 md:space-y-4">
-                  <div className="grid gap-2 md:gap-4 grid-cols-1 md:grid-cols-2">
-                    <div className="space-y-1 md:space-y-2">
-                      <Label htmlFor="ref1Nombre" className="text-[10px] md:text-sm">
-                        Nombre completo de la referencia
-                      </Label>
-                      <Input
-                        id="ref1Nombre"
-                        placeholder="Nombre de la referencia"
-                        value={ref1Nombre}
-                        onChange={(e) => {
-                          setRef1Nombre(e.target.value.toUpperCase())
-                          clearFieldError("ref1Nombre")
-                        }}
-                        className={`h-7 md:h-10 text-[10px] md:text-sm uppercase ${errCls("ref1Nombre")}`}
-                      />
-                    </div>
-                    <div className="space-y-1 md:space-y-2">
-                      <Label htmlFor="ref1Telefono" className="text-[10px] md:text-sm">
-                        Teléfono de la referencia
-                      </Label>
-                      <Input
-                        id="ref1Telefono"
-                        placeholder="Teléfono de la referencia"
-                        type="tel"
-                        value={ref1Telefono}
-                        onChange={(e) => {
-                          setRef1Telefono(e.target.value.replace(/\D/g, ""))
-                          if (e.target.value) clearFieldError("ref1Telefono")
-                        }}
-                        className={`h-7 md:h-10 text-[10px] md:text-sm ${errCls("ref1Telefono")}`}
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-1 md:space-y-2">
-                    <Label htmlFor="ref1Direccion" className="text-[10px] md:text-sm">
-                      Dirección de la referencia
-                    </Label>
-                    <Input
-                      id="ref1Direccion"
-                      placeholder="Dirección de la referencia"
-                      value={ref1Direccion}
-                      onChange={(e) => {
-                        setRef1Direccion(e.target.value.toUpperCase())
-                        clearFieldError("ref1Direccion")
-                      }}
-                      className={`h-7 md:h-10 text-[10px] md:text-sm uppercase ${errCls("ref1Direccion")}`}
-                    />
-                  </div>
-                </div>
-              </div>
-            </>
-          ) : (
-            // Existing client selector — searchable dropdown filtered by ruta/apodo
-            <div className="space-y-1 md:space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="clientSearch" className="text-[10px] md:text-sm">
-                  Cliente
-                </Label>
-                <div className="flex items-center gap-1.5">
-                  <Checkbox
-                    id="soloSinPrestamo"
-                    checked={soloSinPrestamo}
-                    onCheckedChange={(checked) => setSoloSinPrestamo(checked === true)}
-                    className="h-3.5 w-3.5 md:h-4 md:w-4"
-                  />
-                  <Label htmlFor="soloSinPrestamo" className="text-[9px] md:text-xs text-muted-foreground cursor-pointer">
-                    Solo sin prestamo activo
-                  </Label>
-                </div>
-              </div>
-              {/* Se dice en palabras qué puede hacer la unidad. Sin esto, un
-                  vendedor que ve en la lista a alguien que ya tiene crédito no
-                  sabe si es un error o algo permitido. */}
-              {multiplesPrestamos && (
-                <p className="text-[9px] md:text-xs text-muted-foreground">
-                  Esta unidad permite varios préstamos al mismo cliente: el nuevo corre en paralelo
-                  con el que ya tiene.
-                </p>
-              )}
-              {/* Combobox (Popover + Command) y no un Select.
-                  El Select de Radix esta pensado para elegir con el teclado:
-                  se queda con las pulsaciones para su propia busqueda y
-                  maneja el foco el mismo. Con un campo de texto adentro eso
-                  choca, y en el celular era peor — al abrirse el teclado la
-                  pantalla cambia de tamaño y el desplegable se cerraba a la
-                  primera letra. Popover + Command si esta hecho para
-                  contener un buscador. */}
-              <Popover open={clientPickerOpen} onOpenChange={(open) => {
-                setClientPickerOpen(open)
-                // Al abrir sin nada cargado se traen los clientes de la ruta.
-                if (open && clientOptions.length === 0 && !loadingClients) {
-                  setClientSearch("")
-                }
-              }}>
-                <PopoverTrigger asChild>
-                  <Button
-                    id="clientSearch"
-                    type="button"
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={clientPickerOpen}
-                    className="w-full justify-between h-7 md:h-10 text-[10px] md:text-sm font-normal px-2 md:px-3"
-                  >
-                    <span className={`truncate ${selectedClientLabel ? "" : "text-muted-foreground"}`}>
-                      {loadingClients && !clientPickerOpen
-                        ? "Cargando..."
-                        : selectedClientLabel || "Seleccione un cliente..."}
-                    </span>
-                    <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  className="p-0 w-[var(--radix-popover-trigger-width)]"
-                  align="start"
-                  // En el celular el teclado virtual roba el foco al abrir.
-                  // Sin esto, Radix lo devuelve al boton y el campo pierde el
-                  // cursor apenas se toca.
-                  onOpenAutoFocus={(e) => e.preventDefault()}
-                >
-                  <Command shouldFilter={false}>
-                    {/* shouldFilter en false: el filtrado lo hace el servidor
-                        con `ilike` sobre el apodo. Si tambien filtrara cmdk,
-                        escondería resultados que el servidor si devolvio. */}
-                    <CommandInput
-                      placeholder="Buscar por apodo..."
-                      value={clientSearch}
-                      onValueChange={(v) => setClientSearch(v.toUpperCase())}
-                      className="text-[11px] md:text-sm uppercase"
-                    />
-                    <CommandList className="max-h-52">
-                      {loadingClients && (
-                        <div className="flex items-center justify-center py-3 text-muted-foreground text-[10px] gap-1">
-                          <Loader2 className="h-3 w-3 animate-spin" /> Buscando...
-                        </div>
-                      )}
-                      {!loadingClients && clientOptions.length === 0 && (
-                        <div className="py-3 text-center text-muted-foreground text-[10px] md:text-sm">
-                          No se encontraron clientes en esta ruta
-                        </div>
-                      )}
-                      {!loadingClients && clientOptions.length > 0 && (
-                        <CommandGroup>
-                          {clientOptions.map((c) => (
-                            <CommandItem
-                              key={c.id}
-                              value={c.id}
-                              onSelect={() => {
-                                // Al elegir otro cliente se limpian los datos
-                                // del anterior (incluidos los de un intento de
-                                // cliente nuevo abandonado).
-                                limpiarDatosCliente()
-                                setSelectedClient(c.id)
-                                setSelectedClientLabel((c.apodo || c.nombre_completo).toUpperCase())
-                                setClientPickerOpen(false)
-                              }}
-                              className="text-[10px] md:text-sm"
-                            >
-                              <Check
-                                className={`mr-2 h-3.5 w-3.5 shrink-0 ${selectedClient === c.id ? "opacity-100" : "opacity-0"}`}
-                              />
-                              {/* El numero delante y con ancho fijo: asi los
-                                  nombres quedan alineados y la columna se lee
-                                  de un vistazo. `tabular-nums` para que el 9 y
-                                  el 1 ocupen lo mismo. */}
-                              {c.numero != null && (
-                                <span className="mr-1.5 w-7 shrink-0 text-right font-semibold tabular-nums text-muted-foreground">
-                                  {c.numero}
-                                </span>
-                              )}
-                              <span className="font-medium truncate">{(c.apodo || c.nombre_completo).toUpperCase()}</span>
-                              {c.apodo && (
-                                <span className="ml-2 text-muted-foreground text-[9px] truncate">{c.nombre_completo}</span>
-                              )}
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      )}
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-            </div>
-          )}
-
-          {condicionesEspeciales && (
-          <>
+        </div>
+        {condicionesEspeciales && (
+          <Seccion icon={SlidersHorizontal} title="Condiciones especiales">
+            <div className="cv-legacy space-y-2">
           {/* Cuando arranca el cobro */}
           {!ventaHomologada && (
             <label
@@ -2949,8 +2535,6 @@ export function NewLoan({
               </span>
             </span>
           </label>
-          </>
-          )}
 
           {ventaHomologada && (
             <div className="rounded-lg border border-violet-300 bg-violet-50/60 p-3 space-y-3">
@@ -3211,392 +2795,668 @@ export function NewLoan({
             </div>
           )}
 
-          {/* Pago Adelantado - Préstamo Empleado Checkboxes */}
-          <div className="grid gap-2 md:gap-4 grid-cols-2">
-            <label
-              htmlFor="pagoAdelantado"
-              className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-all border ${
-                pagoAdelantado
-                  ? "bg-sky-100 border-sky-400 text-sky-800"
-                  : "bg-muted/50 border-border hover:bg-muted"
-              }`}
-            >
-              <Checkbox
-                id="pagoAdelantado"
-                checked={pagoAdelantado}
-                onCheckedChange={(checked) => {
-                  setPagoAdelantado(checked as boolean)
-                  if (checked && valorCuota) {
-                    setValorPago(valorCuota)
-                  }
-                }}
-                className="h-4 w-4 md:h-5 md:w-5"
-              />
-              <span className="text-[11px] md:text-sm font-medium">
-                Pago adelantado
-              </span>
-            </label>
+            </div>
+          </Seccion>
+        )}
 
-            <label
-              htmlFor="prestamoEmpleado"
-              className={`flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-all border ${
-                prestamoEmpleado
-                  ? "bg-green-100 border-green-400 text-green-800"
-                  : "bg-muted/50 border-border hover:bg-muted"
-              }`}
-            >
-              <Checkbox
-                id="prestamoEmpleado"
-                checked={prestamoEmpleado}
-                onCheckedChange={(checked) => setPrestamoEmpleado(checked as boolean)}
-                className="h-4 w-4 md:h-5 md:w-5"
-              />
-              <span className="text-[11px] md:text-sm font-medium">
-                Préstamo empleado
-              </span>
-            </label>
-          </div>
+        {/* ── Datos del cliente ─────────────────────────────────────────── */}
+        <Seccion icon={User} title="Datos del cliente">
+          {isNewClient ? (
+            <>
+              <div className="cv-grid-cliente">
+                {/* La captura de la cédula: dispara la cámara y la lectura
+                    (nombre y documento) con GPT-4o. */}
+                <input type="file" accept="image/*" capture="environment" onChange={handleCedulaCapture} className="cv-file" id="cedula-upload" />
+                <label
+                  htmlFor="cedula-upload"
+                  className={`cv-photo${cedulaImage ? " cv-photo--done" : ""}${procesandoCedula ? " cv-photo--busy" : ""}`}
+                  title={procesandoCedula ? "Procesando cédula..." : "Toca para capturar la cédula"}
+                >
+                  {cedulaImage && !procesandoCedula && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={cedulaImage} alt="Cédula" />
+                  )}
+                  {procesandoCedula ? (
+                    <><Loader2 size={40} className="animate-spin" color="#1f6fe0" />Leyendo…</>
+                  ) : cedulaImage ? (
+                    <span className="cv-photo-tag">Cédula ✓ · cambiar</span>
+                  ) : (
+                    <><Camera size={52} fill="#1f6fe0" color="#fff" strokeWidth={1.6} />Captura{!cedulaObligatoria && <span className="cv-opt">(opcional)</span>}</>
+                  )}
+                </label>
 
-          {/* Tipo de Venta · Nro Cuotas
-              Van EN PAREJA y no uno debajo del otro: sueltos, cada uno ocupaba
-              el ancho completo de la pantalla para un dato de una palabra o de
-              dos digitos, y el formulario se alargaba sin necesidad. Es el
-              mismo `grid-cols-2` que ya usan Frecuencia y Valor Cuota. */}
-          <div className="grid gap-2 md:gap-4 grid-cols-2">
+                <div className="cv-field">
+                  <CvLabel req>N.º de documento</CvLabel>
+                  <div className="cv-control">
+                    <input
+                      id="documento"
+                      className={`cv-input cv-input--pr${datosBloqueados ? " cv-input--locked" : ""}${cvErr("documento")}`}
+                      placeholder={datosBloqueados ? "Lo llena la cédula" : "Número de documento"}
+                      value={documento}
+                      readOnly={datosBloqueados}
+                      disabled={procesandoCedula}
+                      onChange={(e) => { setDocumento(e.target.value); clearFieldError("documento") }}
+                    />
+                    {datosBloqueados && <span className="cv-ico-r"><Candado /></span>}
+                  </div>
+                </div>
+                <div className="cv-field">
+                  <CvLabel req>Nombre completo</CvLabel>
+                  <div className="cv-control">
+                    <input
+                      id="nombreCompleto"
+                      className={`cv-input${datosBloqueados ? " cv-input--locked cv-input--dim" : ""}${cvErr("nombreCompleto")}`}
+                      placeholder={datosBloqueados ? "Lo llena la cédula" : "Nombre completo"}
+                      value={nombreCompleto}
+                      readOnly={datosBloqueados}
+                      disabled={procesandoCedula}
+                      onChange={(e) => { setNombreCompleto(e.target.value); clearFieldError("nombreCompleto") }}
+                    />
+                  </div>
+                </div>
+                <div className="cv-field">
+                  <CvLabel req>Alias 1</CvLabel>
+                  <input
+                    id="apodo"
+                    className={`cv-input uppercase placeholder:normal-case${cvErr("apodo")}`}
+                    placeholder="Apodo o referencia"
+                    value={apodo}
+                    onChange={(e) => { setApodo(e.target.value.toUpperCase()); clearFieldError("apodo") }}
+                  />
+                </div>
+                <div className="cv-field">
+                  <CvLabel req>Teléfono</CvLabel>
+                  {/* El indicativo va pegado al número: son un solo dato. */}
+                  <div className="cv-telefono">
+                    <div className="cv-control cv-indicativo">
+                      <select
+                        aria-label="Indicativo del país"
+                        className="cv-input"
+                        value={indicativo}
+                        onChange={(e) => cambiarIndicativo(e.target.value)}
+                      >
+                        {INDICATIVOS.map((i) => (
+                          <option key={i.codigo} value={i.codigo}>{i.codigo}</option>
+                        ))}
+                      </select>
+                      <ChevronDown size={16} strokeWidth={1.75} className="cv-chevron" style={{ right: 8 }} />
+                    </div>
+                    <div className="cv-control" style={{ flex: 1 }}>
+                      <input
+                        id="telefono"
+                        type="tel"
+                        className={`cv-input cv-input--pr${telefonoError || formErrors.has("telefono") ? " cv-input--err" : ""}`}
+                        placeholder={`${requiredPhoneDigits} dígitos`}
+                        value={telefono}
+                        maxLength={requiredPhoneDigits}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/\D/g, "")
+                          setTelefono(val)
+                          validatePhone(val, "tel1")
+                          if (val) clearFieldError("telefono")
+                        }}
+                      />
+                      <span className="cv-ico-r"><MessageCircle size={26} color="#6b7480" strokeWidth={1.75} /></span>
+                    </div>
+                  </div>
+                  {telefonoError && <span className="cv-error">{telefonoError}</span>}
+                </div>
+              </div>
+
+              <div className="cv-grid-2">
+                <div className="cv-field">
+                  <CvLabel opt="(opcional)">Teléfono 2</CvLabel>
+                  <input
+                    id="telefono2"
+                    type="tel"
+                    className={`cv-input${telefono2Error ? " cv-input--err" : ""}`}
+                    placeholder={`${requiredPhoneDigits} dígitos`}
+                    value={telefono2}
+                    maxLength={requiredPhoneDigits}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, "")
+                      setTelefono2(val)
+                      validatePhone(val, "tel2")
+                    }}
+                  />
+                  {telefono2Error && <span className="cv-error">{telefono2Error}</span>}
+                </div>
+                <div />
+              </div>
+
+              {/* El reverso: al activarlo se fotografía y la IA lee el
+                  domicilio, que va a "Dirección del DNI". */}
+              <label className="cv-check">
+                <input
+                  id="leer-direccion"
+                  type="checkbox"
+                  checked={leerDireccion}
+                  onChange={(e) => setLeerDireccion(e.target.checked)}
+                />
+                <span className="cv-check-text">
+                  <CvLabel>Leer la dirección del reverso del documento <Info size={22} color="#1f6fe0" strokeWidth={1.75} /></CvLabel>
+                  <span className="cv-hint" style={{ paddingLeft: 0 }}>
+                    Al activar esta opción se habilita la captura del reverso para leer la dirección.
+                  </span>
+                </span>
+              </label>
+              {leerDireccion && (
+                <>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleRespaldoCapture}
+                    className="cv-file"
+                    id="cedula-respaldo-upload"
+                    disabled={procesandoRespaldo}
+                  />
+                  <label htmlFor="cedula-respaldo-upload" className="cv-reverso">
+                    {procesandoRespaldo
+                      ? <Loader2 size={20} className="animate-spin" />
+                      : <Camera size={22} fill="#1f6fe0" color="#fff" strokeWidth={1.6} />}
+                    {procesandoRespaldo ? "Leyendo la dirección…" : "Fotografiar el reverso"}
+                  </label>
+                </>
+              )}
+
+              <div className="cv-grid-2">
+                <div className="cv-field">
+                  <CvLabel>Dirección del DNI</CvLabel>
+                  <div className="cv-control">
+                    <span className="cv-ico-l"><Pin /></span>
+                    <input
+                      id="direccionResidencia"
+                      className="cv-input cv-input--pl cv-input--pr cv-input--locked uppercase placeholder:normal-case"
+                      placeholder="La lee el reverso"
+                      value={direccionResidencia}
+                      readOnly
+                    />
+                    <span className="cv-ico-r"><Candado /></span>
+                  </div>
+                </div>
+                <div className="cv-field">
+                  <CvLabel>Dirección de domicilio (si es diferente)</CvLabel>
+                  <div className="cv-control">
+                    <span className="cv-ico-l"><Pin /></span>
+                    <input
+                      id="direccionDomicilio"
+                      className="cv-input cv-input--pl uppercase placeholder:normal-case"
+                      placeholder="Donde vive, si no es la del DNI"
+                      value={direccionDomicilio}
+                      onChange={(e) => setDireccionDomicilio(e.target.value.toUpperCase())}
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="cv-legacy">
             <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="tipoVenta" className="text-[11px] md:text-sm">
-                Tipo de Venta
-              </Label>
-              <Select value={tipoVenta} onValueChange={(v) => { setTipoVenta(v); setCuentaId("") }}>
-                <SelectTrigger id="tipoVenta" className="h-8 md:h-10 text-[11px] md:text-sm">
-                  <SelectValue placeholder="Seleccione tipo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="efectivo" className="text-[11px] md:text-sm">
-                    Efectivo
-                  </SelectItem>
-                  <SelectItem value="transferencia" className="text-[11px] md:text-sm">
-                    Transferencia
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="clientSearch" className="text-[10px] md:text-sm">
+                  Cliente
+                </Label>
+                <div className="flex items-center gap-1.5">
+                  <Checkbox
+                    id="soloSinPrestamo"
+                    checked={soloSinPrestamo}
+                    onCheckedChange={(checked) => setSoloSinPrestamo(checked === true)}
+                    className="h-3.5 w-3.5 md:h-4 md:w-4"
+                  />
+                  <Label htmlFor="soloSinPrestamo" className="text-[9px] md:text-xs text-muted-foreground cursor-pointer">
+                    Solo sin prestamo activo
+                  </Label>
+                </div>
+              </div>
+              {/* Se dice en palabras qué puede hacer la unidad. Sin esto, un
+                  vendedor que ve en la lista a alguien que ya tiene crédito no
+                  sabe si es un error o algo permitido. */}
+              {multiplesPrestamos && (
+                <p className="text-[9px] md:text-xs text-muted-foreground">
+                  Esta unidad permite varios préstamos al mismo cliente: el nuevo corre en paralelo
+                  con el que ya tiene.
+                </p>
+              )}
+              {/* Combobox (Popover + Command) y no un Select.
+                  El Select de Radix esta pensado para elegir con el teclado:
+                  se queda con las pulsaciones para su propia busqueda y
+                  maneja el foco el mismo. Con un campo de texto adentro eso
+                  choca, y en el celular era peor — al abrirse el teclado la
+                  pantalla cambia de tamaño y el desplegable se cerraba a la
+                  primera letra. Popover + Command si esta hecho para
+                  contener un buscador. */}
+              <Popover open={clientPickerOpen} onOpenChange={(open) => {
+                setClientPickerOpen(open)
+                // Al abrir sin nada cargado se traen los clientes de la ruta.
+                if (open && clientOptions.length === 0 && !loadingClients) {
+                  setClientSearch("")
+                }
+              }}>
+                <PopoverTrigger asChild>
+                  <Button
+                    id="clientSearch"
+                    type="button"
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={clientPickerOpen}
+                    className="w-full justify-between h-7 md:h-10 text-[10px] md:text-sm font-normal px-2 md:px-3"
+                  >
+                    <span className={`truncate ${selectedClientLabel ? "" : "text-muted-foreground"}`}>
+                      {loadingClients && !clientPickerOpen
+                        ? "Cargando..."
+                        : selectedClientLabel || "Seleccione un cliente..."}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="p-0 w-[var(--radix-popover-trigger-width)]"
+                  align="start"
+                  // En el celular el teclado virtual roba el foco al abrir.
+                  // Sin esto, Radix lo devuelve al boton y el campo pierde el
+                  // cursor apenas se toca.
+                  onOpenAutoFocus={(e) => e.preventDefault()}
+                >
+                  <Command shouldFilter={false}>
+                    {/* shouldFilter en false: el filtrado lo hace el servidor
+                        con `ilike` sobre el apodo. Si tambien filtrara cmdk,
+                        escondería resultados que el servidor si devolvio. */}
+                    <CommandInput
+                      placeholder="Buscar por apodo..."
+                      value={clientSearch}
+                      onValueChange={(v) => setClientSearch(v.toUpperCase())}
+                      className="text-[11px] md:text-sm uppercase"
+                    />
+                    <CommandList className="max-h-52">
+                      {loadingClients && (
+                        <div className="flex items-center justify-center py-3 text-muted-foreground text-[10px] gap-1">
+                          <Loader2 className="h-3 w-3 animate-spin" /> Buscando...
+                        </div>
+                      )}
+                      {!loadingClients && clientOptions.length === 0 && (
+                        <div className="py-3 text-center text-muted-foreground text-[10px] md:text-sm">
+                          No se encontraron clientes en esta ruta
+                        </div>
+                      )}
+                      {!loadingClients && clientOptions.length > 0 && (
+                        <CommandGroup>
+                          {clientOptions.map((c) => (
+                            <CommandItem
+                              key={c.id}
+                              value={c.id}
+                              onSelect={() => {
+                                // Al elegir otro cliente se limpian los datos
+                                // del anterior (incluidos los de un intento de
+                                // cliente nuevo abandonado).
+                                limpiarDatosCliente()
+                                setSelectedClient(c.id)
+                                setSelectedClientLabel((c.apodo || c.nombre_completo).toUpperCase())
+                                setClientPickerOpen(false)
+                              }}
+                              className="text-[10px] md:text-sm"
+                            >
+                              <Check
+                                className={`mr-2 h-3.5 w-3.5 shrink-0 ${selectedClient === c.id ? "opacity-100" : "opacity-0"}`}
+                              />
+                              {/* El numero delante y con ancho fijo: asi los
+                                  nombres quedan alineados y la columna se lee
+                                  de un vistazo. `tabular-nums` para que el 9 y
+                                  el 1 ocupen lo mismo. */}
+                              {c.numero != null && (
+                                <span className="mr-1.5 w-7 shrink-0 text-right font-semibold tabular-nums text-muted-foreground">
+                                  {c.numero}
+                                </span>
+                              )}
+                              <span className="font-medium truncate">{(c.apodo || c.nombre_completo).toUpperCase()}</span>
+                              {c.apodo && (
+                                <span className="ml-2 text-muted-foreground text-[9px] truncate">{c.nombre_completo}</span>
+                              )}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
 
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="dias" className="text-[11px] md:text-sm">
-                Nro Cuotas <span className="text-red-500">*</span>
-              </Label>
-              <Input
+            </div>
+          )}
+        </Seccion>
+
+        {/* ── Datos del comercio (cliente nuevo) ──────────────────────────
+            En un cliente que ya existe solo se puede agregar el Alias 2. */}
+        <Seccion icon={Store} title="Datos del comercio">
+          {isNewClient ? (
+            <div className="cv-grid-comercio">
+              <div className="cv-field">
+                <CvLabel req>Tipo de comercio</CvLabel>
+                <div className="cv-control">
+                  <span className="cv-ico-l"><Store size={24} fill="#1f6fe0" color="#1f6fe0" strokeWidth={1.5} /></span>
+                  <input
+                    id="tipoComercio"
+                    className={`cv-input cv-input--pl uppercase placeholder:normal-case${cvErr("tipoComercio")}`}
+                    placeholder="Ej: tienda, restaurante"
+                    value={tipoComercio}
+                    onChange={(e) => { setTipoComercio(e.target.value.toUpperCase()); clearFieldError("tipoComercio") }}
+                  />
+                </div>
+              </div>
+              <div className="cv-field">
+                <CvLabel opt="(opcional)">Alias 2</CvLabel>
+                <input
+                  id="apodo2"
+                  className="cv-input uppercase placeholder:normal-case"
+                  placeholder="Otro nombre con el que se le conoce"
+                  value={apodo2}
+                  onChange={(e) => setApodo2(e.target.value.toUpperCase())}
+                />
+              </div>
+              <div className="cv-local">
+                <CvLabel opt="(opcional)">Foto del local</CvLabel>
+                <input type="file" accept="image/*" capture="environment" onChange={handleFotoLocal} className="cv-file" id="foto-local" disabled={subiendoFotoLocal} />
+                <label
+                  htmlFor="foto-local"
+                  className={`cv-photo${fotoLocalUrl ? " cv-photo--done" : ""}${subiendoFotoLocal ? " cv-photo--busy" : ""}`}
+                >
+                  {fotoLocalUrl && !subiendoFotoLocal && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={fotoLocalUrl} alt="Local" />
+                  )}
+                  {subiendoFotoLocal
+                    ? <><Loader2 size={32} className="animate-spin" color="#1f6fe0" />Subiendo…</>
+                    : fotoLocalUrl
+                      ? <span className="cv-photo-tag">Cargada ✓</span>
+                      : <><Camera size={40} fill="#1f6fe0" color="#fff" strokeWidth={1.6} />Foto del local</>}
+                </label>
+              </div>
+              <div className="cv-field cv-span-2">
+                <CvLabel req>Dirección del comercio</CvLabel>
+                <div className="cv-control">
+                  <span className="cv-ico-l"><Pin /></span>
+                  <input
+                    id="direccion"
+                    className={`cv-input cv-input--pl uppercase placeholder:normal-case${cvErr("direccion")}`}
+                    placeholder="Donde se le cobra"
+                    value={direccion}
+                    onChange={(e) => { setDireccion(e.target.value.toUpperCase()); clearFieldError("direccion") }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="cv-grid-2">
+              <div className="cv-field">
+                <CvLabel opt="(opcional)">Alias 2</CvLabel>
+                <input
+                  id="apodo2"
+                  className="cv-input uppercase placeholder:normal-case"
+                  placeholder="Otro nombre con el que se le conoce"
+                  value={apodo2}
+                  onChange={(e) => setApodo2(e.target.value.toUpperCase())}
+                />
+                <span className="cv-hint">Se agrega al cliente. Vacío = no se toca.</span>
+              </div>
+              <div />
+            </div>
+          )}
+
+          {/* CON CUÁL DE LOS DOS SE VE ESTE PRÉSTAMO. Solo con dos apodos
+              distintos: lo elegido manda en lista de cobro, recibo y
+              extracto. */}
+          {isNewClient && apodo.trim() && apodo2.trim() &&
+            apodo.trim().toLowerCase() !== apodo2.trim().toLowerCase() && (
+            <div className="cv-field">
+              <CvLabel>¿Con cuál alias se verá este préstamo?</CvLabel>
+              <div className="cv-seg" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+                {([1, 2] as const).map((n) => (
+                  <button key={n} type="button" role="radio" aria-checked={apodoElegido === n} onClick={() => setApodoElegido(n)}>
+                    {n === 1 ? apodo.trim() : apodo2.trim()}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </Seccion>
+
+        {/* ── Datos de la venta ─────────────────────────────────────────── */}
+        <Seccion icon={CircleDollarSign} relleno title="Datos de la venta">
+          <div className="cv-field">
+            <CvLabel req>Tipo de venta</CvLabel>
+            <div className="cv-seg" role="radiogroup">
+              {([
+                ["efectivo", "Efectivo", CircleDollarSign],
+                ["transferencia", "Transferencia", ArrowLeftRight],
+                ["mixto", "Mixto", Shuffle],
+              ] as const).map(([id, label, Icono]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={tipoVenta === id}
+                  onClick={() => {
+                    setTipoVenta(id)
+                    if (id === "efectivo") setCuentaId("")
+                    if (id !== "mixto") { setVentaEfectivo(""); setVentaTransferencia("") }
+                  }}
+                >
+                  <Icono size={24} strokeWidth={1.75} />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* La cuenta, en transferencia y en mixta. */}
+          {esTransfer && (
+            <div className="cv-field">
+              <CvLabel>Cuenta de transferencia</CvLabel>
+              <div className="cv-control">
+                <select
+                  id="cuentaId"
+                  className="cv-input cv-input--tint"
+                  value={cuentaId}
+                  onChange={(e) => setCuentaId(e.target.value)}
+                  disabled={loadingCuentas}
+                >
+                  <option value="">{loadingCuentas ? "Cargando cuentas…" : cuentas.length ? "Seleccione una cuenta" : "No hay cuentas para esta ruta"}</option>
+                  {cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </select>
+                <ChevronDown size={20} strokeWidth={1.75} className="cv-chevron" />
+              </div>
+            </div>
+          )}
+
+          <div className="cv-grid-3">
+            <div className="cv-field">
+              <CvLabel req>Valor</CvLabel>
+              <div className="cv-control">
+                <input
+                  id="amount"
+                  inputMode="decimal"
+                  placeholder="0"
+                  className={`cv-input${cvErr("amount")}`}
+                  value={mostrarMonto(valor)}
+                  onChange={(e) => {
+                    const crudo = leerMonto(e.target.value)
+                    setValor(crudo)
+                    if (crudo) clearFieldError("amount")
+                  }}
+                />
+              </div>
+            </div>
+            <div className="cv-field">
+              <CvLabel req>N.º de cuotas</CvLabel>
+              <input
                 id="dias"
                 type="number"
                 inputMode="numeric"
                 placeholder="Cuotas"
+                className={`cv-input cv-input--tint${cvErr("dias")}`}
                 value={dias}
-                onChange={(e) => {
-                  setDias(e.target.value)
-                  if (e.target.value) clearFieldError("dias")
-                }}
-                className={`h-8 md:h-10 text-[11px] md:text-sm ${errCls("dias")}`}
+                onChange={(e) => { setDias(e.target.value); if (e.target.value) clearFieldError("dias") }}
               />
             </div>
-          </div>
-
-          {/* Cuenta bancaria - solo visible para Transferencia */}
-          {tipoVenta === "transferencia" && (
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="cuentaId" className="text-[11px] md:text-sm">
-                Cuenta de Transferencia
-              </Label>
-              <Select value={cuentaId} onValueChange={setCuentaId} disabled={loadingCuentas}>
-                <SelectTrigger id="cuentaId" className="h-8 md:h-10 text-[11px] md:text-sm">
-                  <SelectValue placeholder={loadingCuentas ? "Cargando cuentas..." : "Seleccione una cuenta"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {cuentas.length === 0 && !loadingCuentas ? (
-                    <SelectItem value="__none" disabled className="text-[11px] md:text-sm text-muted-foreground">
-                      No hay cuentas disponibles para esta ruta
-                    </SelectItem>
-                  ) : (
-                    cuentas.map((c) => (
-                      <SelectItem key={c.id} value={c.id} className="text-[11px] md:text-sm">
-                        {c.nombre}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          {/* Comprobante — solo en transferencia.
-              Se pide donde se pide la cuenta, que es el momento en que el
-              vendedor tiene el soporte a la mano. En efectivo no aparece:
-              una casilla que nunca se llena solo alarga el formulario. */}
-          {tipoVenta === "transferencia" && (
-            <div className="space-y-1 md:space-y-2">
-              <Label className="text-[11px] md:text-sm">Comprobante (opcional)</Label>
-              {comprobanteUrl ? (
-                <div className="flex items-center gap-2 rounded-md border border-green-600 bg-green-50 px-2 py-1.5 dark:bg-green-950/40">
-                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-700 dark:text-green-400" />
-                  <a
-                    href={comprobanteUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-1 truncate text-[11px] md:text-sm font-medium text-green-800 underline dark:text-green-300"
-                  >
-                    Ver comprobante cargado
-                  </a>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7 shrink-0 text-green-800 hover:bg-green-100 dark:text-green-300"
-                    onClick={() => setComprobanteUrl(null)}
-                    aria-label="Quitar el comprobante"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+            <div className="cv-field">
+              <CvLabel req={!prestamoEmpleado}>Interés (%)</CvLabel>
+              {prestamoEmpleado ? (
+                <div className="cv-control">
+                  <input className="cv-input cv-input--locked cv-input--dim cv-input--pr" value="Sin interés" readOnly />
+                  <span className="cv-ico-r"><Candado /></span>
                 </div>
               ) : (
-                <div>
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    onChange={handleComprobante}
-                    className="hidden"
-                    id="comprobante-venta"
-                    disabled={subiendoComprobante}
-                  />
-                  <Label htmlFor="comprobante-venta" className="m-0 cursor-pointer">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-8 w-full justify-start gap-2 text-[11px] md:h-10 md:text-sm"
-                      disabled={subiendoComprobante}
-                      asChild
-                    >
-                      <span>
-                        {subiendoComprobante ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Paperclip className="h-3.5 w-3.5" />
-                        )}
-                        {subiendoComprobante ? "Subiendo…" : "Adjuntar comprobante"}
-                      </span>
-                    </Button>
-                  </Label>
-                </div>
-              )}
-              <p className="text-[10px] md:text-xs text-muted-foreground">
-                Foto o PDF del soporte de la transferencia. Queda guardado con la venta.
-              </p>
-            </div>
-          )}
-
-          {/* Valor - Tasa - Saldo (calculado automáticamente)
-              Tres columnas en un teléfono dan ~105px cada una. "Tasa de
-              Interés (%)" y "Saldo x pagar" no caben en un renglón, se partían
-              en dos y empujaban su campo por debajo del de Valor: la fila
-              quedaba escalonada. En móvil van con el nombre corto y el largo
-              vuelve en pantalla grande, donde sí cabe.
-
-              `items-end` es el seguro: si alguna etiqueta igual se parte, los
-              campos siguen alineados por abajo en vez de escalonarse. */}
-          <div className={`grid gap-2 md:gap-4 items-end ${prestamoEmpleado ? "grid-cols-2" : "grid-cols-3"}`}>
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="amount" className="text-[11px] md:text-sm">
-                Valor <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="amount"
-                placeholder="$ 0"
-                type="text"
-                inputMode="decimal"
-                value={mostrarMonto(valor)}
-                onChange={(e) => {
-                  const crudo = leerMonto(e.target.value)
-                  setValor(crudo)
-                  if (crudo) clearFieldError("amount")
-                }}
-                className={`h-8 md:h-10 text-[11px] md:text-sm ${errCls("amount")}`}
-              />
-            </div>
-            {!prestamoEmpleado && (
-              <div className="space-y-1 md:space-y-2">
-                <Label htmlFor="interestRate" className="text-[11px] md:text-sm whitespace-nowrap">
-                  <span className="md:hidden">Tasa (%)</span>
-                  <span className="hidden md:inline">Tasa de Interés (%)</span>
-                  <span className="text-red-500"> *</span>
-                </Label>
-                <Input
+                <input
                   id="interestRate"
-                  placeholder="0.00"
                   type="number"
                   step="0.01"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  className={`cv-input${cvErr("tasaInteres")}`}
                   value={tasaInteres}
-                  onChange={(e) => {
-                    setTasaInteres(e.target.value)
-                    if (e.target.value) clearFieldError("tasaInteres")
-                  }}
-                  className={`h-8 md:h-10 text-[11px] md:text-sm ${errCls("tasaInteres")}`}
+                  onChange={(e) => { setTasaInteres(e.target.value); if (e.target.value) clearFieldError("tasaInteres") }}
                 />
+              )}
+            </div>
+          </div>
+
+          {/* MIXTA: cuánto de cada forma. Escribir uno completa el otro. */}
+          {tipoVenta === "mixto" && (() => {
+            const ef = Number.parseFloat(ventaEfectivo) || 0
+            const tr = Number.parseFloat(ventaTransferencia) || 0
+            const cuadra = Math.round(ef + tr) === Math.round(valorNumVista)
+            const escribir = (txt: string, cual: "ef" | "tr") => {
+              const crudo = leerMonto(txt)
+              const n = Number.parseFloat(crudo) || 0
+              const resto = valorNumVista - n > 0 ? String(valorNumVista - n) : ""
+              if (cual === "ef") { setVentaEfectivo(crudo); setVentaTransferencia(resto) }
+              else { setVentaTransferencia(crudo); setVentaEfectivo(resto) }
+              clearFieldError("mixto")
+            }
+            return (
+              <div className="cv-grid-2">
+                <div className="cv-field">
+                  <CvLabel req>En efectivo</CvLabel>
+                  <div className="cv-control">
+                        <input inputMode="decimal" className={`cv-input${cvErr("mixto")}`} value={mostrarMonto(ventaEfectivo)} onChange={(e) => escribir(e.target.value, "ef")} />
+                  </div>
+                </div>
+                <div className="cv-field">
+                  <CvLabel req>Por transferencia</CvLabel>
+                  <div className="cv-control">
+                        <input inputMode="decimal" className={`cv-input${cvErr("mixto")}`} value={mostrarMonto(ventaTransferencia)} onChange={(e) => escribir(e.target.value, "tr")} />
+                  </div>
+                  {!cuadra && (ef > 0 || tr > 0) && (
+                    <span className="cv-error">
+                      Suman ${Math.round(ef + tr).toLocaleString("es-CO")} y el valor es ${Math.round(valorNumVista).toLocaleString("es-CO")}.
+                    </span>
+                  )}
+                </div>
               </div>
-            )}
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="saldo" className="text-[11px] md:text-sm whitespace-nowrap">
-                <span className="md:hidden">Saldo</span>
-                <span className="hidden md:inline">Saldo x pagar</span>
-                <span className="ml-1 text-[9px] text-muted-foreground font-normal">auto</span>
-              </Label>
-              <Input
-                id="saldo"
-                type="text"
-                inputMode="decimal"
-                value={mostrarMonto(valorAPagar)}
-                readOnly
-                className="h-8 md:h-10 text-[11px] md:text-sm bg-muted font-semibold text-primary"
-              />
-            </div>
-          </div>
+            )
+          })()}
 
-          {/* Método de Interés — no se muestra en dos casos:
-              · préstamos de empleado, que no llevan interés;
-              · unidades con UN SOLO método habilitado, donde no hay nada que
-                elegir. Un campo con una sola opción solo ocupa espacio y hace
-                dudar al vendedor sobre si tiene que tocarlo. El método se
-                aplica igual: `amortizacionInicial` lo deja puesto. */}
-          {!prestamoEmpleado && amortizacionesDisponibles.length > 1 && (
-          <div className="space-y-1 md:space-y-2">
-            <Label htmlFor="tipoAmortizacion" className="text-[11px] md:text-sm">
-              Método de Interés <span className="text-red-500">*</span>
-            </Label>
-            <Select
-              value={tipoAmortizacion}
-              onValueChange={(v) => {
-                setTipoAmortizacion(v)
-                clearFieldError("tipoAmortizacion")
-              }}
-            >
-              <SelectTrigger
-                id="tipoAmortizacion"
-                className={`h-8 md:h-10 text-[11px] md:text-sm ${errCls("tipoAmortizacion")}`}
-              >
-                <SelectValue placeholder="Seleccione método" />
-              </SelectTrigger>
-              <SelectContent>
-                {amortizacionesDisponibles.map((a) => (
-                  <SelectItem key={a.valor} value={a.valor} className="text-[11px] md:text-sm">
-                    {a.etiqueta}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {tipoAmortizacion && (
-              <p className="text-[10px] md:text-xs text-muted-foreground">
-                {AMORTIZACIONES.find((a) => a.valor === tipoAmortizacion)?.ayuda}
-              </p>
-            )}
-          </div>
-          )}
-
-          {/* Frecuencia de Pago - Valor Cuota */}
-          <div className="grid gap-2 md:gap-4 grid-cols-2">
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="frequency" className="text-[11px] md:text-sm">
-                Frecuencia de Pago <span className="text-red-500">*</span>
-              </Label>
-              <Select
-                value={frecuenciaPago}
-                onValueChange={(v) => {
-                  setFrecuenciaPago(v)
-                  clearFieldError("frequency")
-                }}
-              >
-                <SelectTrigger
+          <div className="cv-grid-2">
+            <div className="cv-field">
+              <CvLabel req>Frecuencia de pago</CvLabel>
+              <div className="cv-control">
+                <select
                   id="frequency"
-                  className={`h-8 md:h-10 text-[11px] md:text-sm ${errCls("frequency")}`}
+                  className={`cv-input cv-input--tint${cvErr("frequency")}`}
+                  value={frecuenciaPago}
+                  onChange={(e) => { setFrecuenciaPago(e.target.value); clearFieldError("frequency") }}
                 >
-                  <SelectValue placeholder="Seleccione" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily" className="text-[11px] md:text-sm">
-                    Diario
-                  </SelectItem>
-                  <SelectItem value="weekly" className="text-[11px] md:text-sm">
-                    Semanal
-                  </SelectItem>
-                  <SelectItem value="biweekly" className="text-[11px] md:text-sm">
-                    Quincenal
-                  </SelectItem>
-                  <SelectItem value="monthly" className="text-[11px] md:text-sm">
-                    Mensual
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+                  <option value="">Seleccione</option>
+                  <option value="daily">Diaria</option>
+                  <option value="weekly">Semanal</option>
+                  <option value="biweekly">Quincenal</option>
+                  <option value="monthly">Mensual</option>
+                </select>
+                <ChevronDown size={20} strokeWidth={1.75} className="cv-chevron" />
+              </div>
             </div>
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="valorCuota" className="text-[11px] md:text-sm">
-                Valor Cuota
-              </Label>
-              <Input
-                id="valorCuota"
-                placeholder="$ 0"
-                type="text"
-                inputMode="decimal"
-                value={mostrarMonto(valorCuota)}
-                readOnly
-                className="h-8 md:h-10 text-[11px] md:text-sm bg-muted"
-              />
+            <div className="cv-field">
+              <CvLabel>Valor de cuota</CvLabel>
+              <input className="cv-input cv-input--locked cv-input--dim" value={mostrarMonto(valorCuota) || "$ 0"} readOnly />
             </div>
           </div>
 
-          {/* Day of Week - Only visible if frequency is not daily */}
-          {frecuenciaPago && frecuenciaPago !== "daily" && (
-            <div className="space-y-1 md:space-y-2">
-              <Label htmlFor="dayOfWeek" className="text-[11px] md:text-sm">
-                Día de Cobro{frecuenciaPago === "weekly" && <span className="text-red-500 ml-0.5">*</span>}
-              </Label>
-              <Select value={diaSemana} onValueChange={(v) => { setDiaSemana(v); clearFieldError("diaSemana") }}>
-                <SelectTrigger id="dayOfWeek" className={`h-8 md:h-10 text-[11px] md:text-sm ${errCls("diaSemana")}`}>
-                  <SelectValue placeholder="Seleccione día" />
-                </SelectTrigger>
-                <SelectContent>
-                  {/* Domingo NO se ofrece: no se cobra ese dia (script 067), y
-                      elegirlo dejaba todas las cuotas en un dia sin ruta. */}
-                  <SelectItem value="lunes" className="text-[11px] md:text-sm">
-                    Lunes
-                  </SelectItem>
-                  <SelectItem value="martes" className="text-[11px] md:text-sm">
-                    Martes
-                  </SelectItem>
-                  <SelectItem value="miercoles" className="text-[11px] md:text-sm">
-                    Miércoles
-                  </SelectItem>
-                  <SelectItem value="jueves" className="text-[11px] md:text-sm">
-                    Jueves
-                  </SelectItem>
-                  <SelectItem value="viernes" className="text-[11px] md:text-sm">
-                    Viernes
-                  </SelectItem>
-                  <SelectItem value="sabado" className="text-[11px] md:text-sm">
-                    Sábado
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+          {/* Día de cobro (no diaria) y método de interés (si la unidad
+              tiene más de uno): mismos campos de siempre, con el diseño. */}
+          {((frecuenciaPago && frecuenciaPago !== "daily") || (!prestamoEmpleado && amortizacionesDisponibles.length > 1)) && (
+            <div className="cv-grid-2">
+              {frecuenciaPago && frecuenciaPago !== "daily" ? (
+                <div className="cv-field">
+                  <CvLabel req={frecuenciaPago === "weekly"}>Día de cobro</CvLabel>
+                  <div className="cv-control">
+                    <select
+                      id="dayOfWeek"
+                      className={`cv-input cv-input--tint${cvErr("diaSemana")}`}
+                      value={diaSemana}
+                      onChange={(e) => { setDiaSemana(e.target.value); clearFieldError("diaSemana") }}
+                    >
+                      {/* Domingo NO se ofrece: no se cobra ese día (script 067). */}
+                      <option value="">Seleccione día</option>
+                      <option value="lunes">Lunes</option>
+                      <option value="martes">Martes</option>
+                      <option value="miercoles">Miércoles</option>
+                      <option value="jueves">Jueves</option>
+                      <option value="viernes">Viernes</option>
+                      <option value="sabado">Sábado</option>
+                    </select>
+                    <ChevronDown size={20} strokeWidth={1.75} className="cv-chevron" />
+                  </div>
+                </div>
+              ) : <div />}
+              {!prestamoEmpleado && amortizacionesDisponibles.length > 1 ? (
+                <div className="cv-field">
+                  <CvLabel req>Método de interés</CvLabel>
+                  <div className="cv-control">
+                    <select
+                      id="tipoAmortizacion"
+                      className={`cv-input cv-input--tint${cvErr("tipoAmortizacion")}`}
+                      value={tipoAmortizacion}
+                      onChange={(e) => { setTipoAmortizacion(e.target.value); clearFieldError("tipoAmortizacion") }}
+                    >
+                      <option value="">Seleccione método</option>
+                      {amortizacionesDisponibles.map((a) => <option key={a.valor} value={a.valor}>{a.etiqueta}</option>)}
+                    </select>
+                    <ChevronDown size={20} strokeWidth={1.75} className="cv-chevron" />
+                  </div>
+                  {tipoAmortizacion && (
+                    <span className="cv-hint">{AMORTIZACIONES.find((a) => a.valor === tipoAmortizacion)?.ayuda}</span>
+                  )}
+                </div>
+              ) : <div />}
             </div>
           )}
 
-          <div className="flex justify-end pt-2 md:pt-3">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={calcularAmortizacion}
-              className="h-7 md:h-10 text-[10px] md:text-sm bg-transparent"
-            >
-              Simular amortización
-            </Button>
+          {/* Pago adelantado y préstamo de empleado: los mismos de siempre. */}
+          <div className="cv-chips">
+            <label className={`cv-chip${pagoAdelantado ? " cv-chip--on" : ""}`}>
+              <input
+                id="pagoAdelantado"
+                type="checkbox"
+                checked={pagoAdelantado}
+                onChange={(e) => {
+                  setPagoAdelantado(e.target.checked)
+                  if (e.target.checked && valorCuota) setValorPago(valorCuota)
+                }}
+              />
+              Pago adelantado
+            </label>
+            <label className={`cv-chip${prestamoEmpleado ? " cv-chip--on" : ""}`}>
+              <input
+                id="prestamoEmpleado"
+                type="checkbox"
+                checked={prestamoEmpleado}
+                onChange={(e) => setPrestamoEmpleado(e.target.checked)}
+              />
+              Préstamo empleado
+            </label>
           </div>
-
+          <div className="cv-legacy">
           {pagoAdelantado && (
               <div className="space-y-2 md:space-y-3">
                 <div className="grid gap-2 md:gap-4 grid-cols-1 md:grid-cols-3">
@@ -3667,35 +3527,91 @@ export function NewLoan({
               </div>
             )}
 
-          <div className="flex flex-col-reverse sm:flex-row justify-end gap-1.5 md:gap-2 pt-2 md:pt-4">
-            <Button 
-              variant="outline" 
-              className="h-8 md:h-10 text-[11px] md:text-sm bg-transparent"
-              disabled={isCreating}
-              onClick={onCancel}
-            >
-              Cancelar
-            </Button>
-            <Button 
-              onClick={handleCreateVenta}
-              disabled={isCreating}
-              className="h-8 md:h-10 text-[11px] md:text-sm"
-            >
-              {isCreating ? "Creando..." : "Crear Venta"}
-            </Button>
           </div>
-        </CardContent>
-      </Card>
 
-      {showAmortization && amortizacionTable.length > 0 && (
-        <Card>
-          <CardHeader className="p-2 md:p-6">
-            <CardTitle className="text-xs md:text-base">
-              Tabla de Amortización — {etiquetaAmortizacion(tipoAmortizacion)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-2 md:p-6">
-            <div className="overflow-x-auto">
+          <button
+            type="button"
+            className="cv-sim"
+            onClick={() => { calcularAmortizacion(); setShowSimulacion(true) }}
+          >
+            <Calculator size={24} color="#1f6fe0" strokeWidth={1.75} />
+            Simular amortización
+          </button>
+        </Seccion>
+
+        {/* ── Evidencia de entrega (obligatoria) ────────────────────────── */}
+        <Seccion icon={Camera} relleno title="Evidencia de entrega del crédito">
+          <div className="cv-info">
+            <Info size={20} color="#fff" fill="#1f6fe0" />
+            Es obligatorio subir una foto para poder crear la venta.
+          </div>
+          <input
+            type="file"
+            accept="image/*,application/pdf"
+            capture="environment"
+            onChange={(e) => { void handleComprobante(e); clearFieldError("evidencia") }}
+            className="cv-file"
+            id="comprobante-venta"
+            disabled={subiendoComprobante}
+          />
+          <label
+            htmlFor="comprobante-venta"
+            className={`cv-evid${comprobanteUrl ? " cv-evid--done" : ""}${formErrors.has("evidencia") ? " cv-evid--err" : ""}`}
+          >
+            {subiendoComprobante
+              ? <Loader2 size={44} className="animate-spin" color="#1f6fe0" />
+              : <Camera size={52} fill={comprobanteUrl ? "#16a34a" : "#1f6fe0"} color="#fff" strokeWidth={1.6} />}
+            <span className="cv-evid-text">
+              <span className="cv-evid-title">
+                {subiendoComprobante
+                  ? "Subiendo…"
+                  : comprobanteUrl
+                    ? "Foto cargada · toca para reemplazar"
+                    : "Subir foto de la entrega del dinero"}
+              </span>
+              <span className="cv-evid-sub">En efectivo: foto entregando el dinero al cliente.</span>
+              <span className="cv-evid-sub">En transferencia: foto del comprobante de transferencia.</span>
+            </span>
+          </label>
+          {comprobanteUrl && (
+            <button type="button" className="cv-hint" style={{ alignSelf: "flex-start", border: 0, background: "none", cursor: "pointer", color: "#dc2626" }} onClick={() => setComprobanteUrl(null)}>
+              Quitar la foto
+            </button>
+          )}
+        </Seccion>
+
+        {/* ── Pie ────────────────────────────────────────────────────────── */}
+        <div className="cv-foot">
+          <button type="button" className="cv-submit" onClick={handleCreateVenta} disabled={isCreating || !comprobanteUrl}>
+            {isCreating ? "Creando…" : "Crear Venta"}
+          </button>
+          {!comprobanteUrl && (
+            <span className="cv-hint" style={{ textAlign: "center" }}>Sube la evidencia de entrega para habilitar el botón.</span>
+          )}
+          <button type="button" className="cv-cancel" onClick={onCancel} disabled={isCreating}>
+            Cancelar
+          </button>
+        </div>
+      </div>
+
+      {/* ── Simulación de amortización ─────────────────────────────────── */}
+      <Dialog open={showSimulacion} onOpenChange={setShowSimulacion}>
+        <DialogContent className="max-w-2xl" style={{ fontFamily: "var(--font-nunito-sans), 'Nunito Sans', sans-serif" }}>
+          <DialogHeader>
+            <DialogTitle style={{ color: "#0f3a80", fontSize: 21, fontWeight: 800 }}>Simulación de amortización</DialogTitle>
+            <DialogDescription>
+              {etiquetaAmortizacion(tipoAmortizacion)} · {frecuenciaPago ? ({ daily: "Diaria", weekly: "Semanal", biweekly: "Quincenal", monthly: "Mensual" } as Record<string, string>)[frecuenciaPago] : "sin frecuencia"}
+            </DialogDescription>
+          </DialogHeader>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 18px", fontSize: 15 }}>
+            <span style={{ color: "#5b6573" }}>Capital</span><b>{mostrarMonto(valor) || "$ 0"}</b>
+            <span style={{ color: "#5b6573" }}>Interés</span><b>{prestamoEmpleado ? "Sin interés" : `${tasaInteres || 0} %`}</b>
+            <span style={{ color: "#5b6573" }}>Total a devolver</span><b>{mostrarMonto(valorAPagar) || "$ 0"}</b>
+            <span style={{ color: "#5b6573" }}>Cuotas</span><b>{dias || "—"}</b>
+            <span style={{ color: "#5b6573" }}>Valor de cuota</span><b style={{ color: "#16a34a" }}>{mostrarMonto(valorCuota) || "$ 0"}</b>
+          </div>
+          {showAmortization && amortizacionTable.length > 0 && (
+            <div className="max-h-[50vh] overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="text-[10px] md:text-sm">
@@ -3728,10 +3644,15 @@ export function NewLoan({
                   ))}
                 </TableBody>
               </Table>
+
             </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+          <DialogFooter>
+            <Button onClick={() => setShowSimulacion(false)} style={{ background: "#0f3a80" }}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      </div>
     </div>
   )
 }
