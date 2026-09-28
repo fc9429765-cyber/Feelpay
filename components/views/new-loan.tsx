@@ -872,7 +872,17 @@ export function NewLoan({
    * campos en readOnly. Era una promesa que no se podía cumplir; ahora sí, y
    * la foto sigue ahí como respaldo de lo que se escriba.
    */
+  /**
+   * LO QUE LEYÓ LA IA NO SE TOCA. Si el documento o el nombre salieron de la
+   * foto de la cédula, quedan bloqueados: lo que se guarda es lo que dice el
+   * documento, no lo que alguien escriba encima. Lo que la foto NO alcanzó a
+   * leer queda abierto para escribirlo. Cambiar la foto los libera.
+   */
+  const [docLeidoIA, setDocLeidoIA] = useState(false)
+  const [nombreLeidoIA, setNombreLeidoIA] = useState(false)
   const datosBloqueados = cedulaObligatoria && !cedulaImage
+  const docBloqueado = datosBloqueados || docLeidoIA
+  const nombreBloqueado = datosBloqueados || nombreLeidoIA
   useEffect(() => {
     let cancelado = false
     getRutaUmbrales(rutaId)
@@ -1252,6 +1262,8 @@ export function NewLoan({
 
       setDocumento(doc)
       setNombreCompleto(nom)
+      setDocLeidoIA(!!doc)
+      setNombreLeidoIA(!!nom)
 
       // Leyó a medias. Se pone lo que vino y se dice qué falta, en vez de
       // dejar que la persona descubra sola el campo vacío.
@@ -1284,6 +1296,8 @@ export function NewLoan({
     setCedulaImage(null)
     setDocumento("")
     setNombreCompleto("")
+    setDocLeidoIA(false)
+    setNombreLeidoIA(false)
   }
 
   const calcularAmortizacion = () => {
@@ -1441,6 +1455,8 @@ export function NewLoan({
     setApodo("")
     setDireccionResidencia("")
     setDireccionDomicilio("")
+    setDocLeidoIA(false)
+    setNombreLeidoIA(false)
     setFotoLocalUrl(null)
     setTelefono("")
     setTelefono2("")
@@ -2830,14 +2846,14 @@ export function NewLoan({
                   <div className="cv-control">
                     <input
                       id="documento"
-                      className={`cv-input cv-input--pr${datosBloqueados ? " cv-input--locked" : ""}${cvErr("documento")}`}
+                      className={`cv-input cv-input--pr${docBloqueado ? " cv-input--locked" : ""}${cvErr("documento")}`}
                       placeholder={datosBloqueados ? "Lo llena la cédula" : "Número de documento"}
                       value={documento}
-                      readOnly={datosBloqueados}
+                      readOnly={docBloqueado}
                       disabled={procesandoCedula}
                       onChange={(e) => { setDocumento(e.target.value); clearFieldError("documento") }}
                     />
-                    {datosBloqueados && <span className="cv-ico-r"><Candado /></span>}
+                    {docBloqueado && <span className="cv-ico-r"><Candado /></span>}
                   </div>
                 </div>
                 <div className="cv-field">
@@ -2845,13 +2861,14 @@ export function NewLoan({
                   <div className="cv-control">
                     <input
                       id="nombreCompleto"
-                      className={`cv-input${datosBloqueados ? " cv-input--locked cv-input--dim" : ""}${cvErr("nombreCompleto")}`}
+                      className={`cv-input${nombreBloqueado ? " cv-input--locked cv-input--dim cv-input--pr" : ""}${cvErr("nombreCompleto")}`}
                       placeholder={datosBloqueados ? "Lo llena la cédula" : "Nombre completo"}
                       value={nombreCompleto}
-                      readOnly={datosBloqueados}
+                      readOnly={nombreBloqueado}
                       disabled={procesandoCedula}
                       onChange={(e) => { setNombreCompleto(e.target.value); clearFieldError("nombreCompleto") }}
                     />
+                    {nombreBloqueado && <span className="cv-ico-r"><Candado /></span>}
                   </div>
                 </div>
                 <div className="cv-field">
@@ -2871,14 +2888,15 @@ export function NewLoan({
                     <div className="cv-control cv-indicativo">
                       <select
                         aria-label="Indicativo del país"
-                        className="cv-input"
+                        className="cv-input cv-indicativo-sel"
                         value={indicativo}
                         onChange={(e) => cambiarIndicativo(e.target.value)}
                       >
                         {INDICATIVOS.map((i) => (
-                          <option key={i.codigo} value={i.codigo}>{i.codigo}</option>
+                          <option key={i.codigo} value={i.codigo}>{i.codigo} · {i.pais}</option>
                         ))}
                       </select>
+                      <span className="cv-indicativo-cod">{indicativo}</span>
                       <ChevronDown size={16} strokeWidth={1.75} className="cv-chevron" style={{ right: 8 }} />
                     </div>
                     <div className="cv-control" style={{ flex: 1 }}>
