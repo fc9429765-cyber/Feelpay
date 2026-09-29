@@ -1,0 +1,232 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   REGISTRAR PAGO — el diseño de PROMPT_Registrar_Pago.md (base 760px).
+
+   Todo con prefijo `.rp-` y colgado de `.rp-root`: no toca el resto de la
+   app. Colores, radios y tamaños son los del diseño.
+
+   LA MISMA REGLA DEL DETALLE DE RUTA: el armado NO cambia con el ancho. En
+   una pantalla angosta se reduce en proporción con `zoom` (container query),
+   nunca se apila. Ver components/views/detalle-ruta.css.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.rp-root {
+  --rp-navy: #0f3a80;
+  --rp-text: #1a2b45;
+  --rp-muted: #5b6573;
+  --rp-card-border: #e0e7f1;
+  --rp-in-bg: #eef3f9;
+  --rp-lock-bg: #e9f0f8;
+  --rp-in-border: #b9cbe2;
+  --rp-amber-bg: #fbefdc;
+  --rp-amber-border: #e3b56a;
+  --rp-amber-text: #6b4a14;
+  --rp-ok-bg: #e9f7ee;
+  --rp-ok-border: #2e9a5a;
+  --rp-ok-text: #157a3a;
+  --rp-green: #15a34a;
+  --rp-green-hover: #128a3f;
+  --rp-blue: #1f5fc4;
+  --rp-blue-active: #3f7fd9;
+  --rp-blue-bg: #dbe9fb;
+  --rp-panel: #e6effb;
+  --rp-seg-bg: #f1f5fa;
+  --rp-seg-border: #cfdbe9;
+  --rp-red: #dc2626;
+
+  container: rp / inline-size;
+  font-family: var(--font-nunito-sans), "Nunito Sans", ui-sans-serif, system-ui, sans-serif;
+  color: var(--rp-text);
+  background: linear-gradient(180deg, #eef4fb, #e4eef9);
+  /* El `main` del shell pone p-3 / md:p-6: se descuenta para que el fondo
+     del diseño llegue a los bordes. */
+  margin: -0.75rem;
+  min-height: calc(100% + 1.5rem);
+}
+@media (min-width: 768px) {
+  .rp-root { margin: -1.5rem; min-height: calc(100% + 3rem); }
+}
+.rp-root *, .rp-root *::before, .rp-root *::after { box-sizing: border-box; }
+.rp-root h2, .rp-root p { margin: 0; }
+
+/* ── LA ESCALA ─────────────────────────────────────────────────────────── */
+.rp-frame {
+  --k: 1.08;
+  zoom: var(--k);
+  width: 100%;
+  max-width: calc(760px / var(--k));
+  margin: 0 auto;
+  padding: 18px 24px 22px;
+  /* El armado entra entero desde 680px: la escala se calcula contra eso y
+     topa en 1.08 (la regla del dueño para todas las vistas). */
+}
+@container rp (max-width: 759px) { .rp-frame { --k: 1.074; } }
+@container rp (max-width: 729px) { .rp-frame { --k: 1.029; } }
+@container rp (max-width: 699px) { .rp-frame { --k: 0.985; } }
+@container rp (max-width: 669px) { .rp-frame { --k: 0.941; } }
+@container rp (max-width: 639px) { .rp-frame { --k: 0.897; } }
+@container rp (max-width: 609px) { .rp-frame { --k: 0.853; } }
+@container rp (max-width: 579px) { .rp-frame { --k: 0.809; } }
+@container rp (max-width: 549px) { .rp-frame { --k: 0.765; } }
+@container rp (max-width: 519px) { .rp-frame { --k: 0.721; } }
+@container rp (max-width: 489px) { .rp-frame { --k: 0.676; } }
+@container rp (max-width: 459px) { .rp-frame { --k: 0.632; } }
+@container rp (max-width: 429px) { .rp-frame { --k: 0.588; } }
+@container rp (max-width: 399px) { .rp-frame { --k: 0.544; } }
+@container rp (max-width: 369px) { .rp-frame { --k: 0.500; } }
+@container rp (max-width: 339px) { .rp-frame { --k: 0.456; } }
+@container rp (max-width: 309px) { .rp-frame { --k: 0.412; } }
+
+/* ── Tarjeta ───────────────────────────────────────────────────────────── */
+.rp-card {
+  background: #fff; border: 1px solid var(--rp-card-border); border-radius: 16px;
+  padding: 22px; display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 2px 12px rgba(30, 70, 140, .06);
+}
+.rp-title { margin: 0 0 4px; font-size: 24px; font-weight: 800; color: var(--rp-navy); }
+.rp-row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+.rp-row2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.rp-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rp-label { font-size: 17px; font-weight: 700; color: var(--rp-navy); }
+.rp-label-note { font-weight: 400; color: var(--rp-muted); margin-left: 8px; }
+.rp-wrap { position: relative; display: flex; align-items: center; }
+.rp-abs {
+  position: absolute; display: flex; pointer-events: none;
+  font-size: 18px; font-weight: 600; color: var(--rp-text);
+}
+
+/* Los inputs de la app se pintan con `!important` en @layer base
+   (globals.css). En la misma capa y con más especificidad, se imponen los
+   del diseño. */
+@layer base {
+  .rp-root input.rp-in:not([type="checkbox"]),
+  .rp-root select.rp-in,
+  .rp-root textarea.rp-in {
+    width: 100%;
+    height: 44px;
+    border: 1px solid var(--rp-in-border) !important;
+    border-radius: 12px !important;
+    background-color: var(--rp-in-bg) !important;
+    padding: 0 18px !important;
+    font-size: 17px !important;
+    font-weight: 600 !important;
+    font-family: inherit !important;
+    color: var(--rp-text) !important;
+    outline: none;
+    box-shadow: none !important;
+    text-overflow: ellipsis;
+  }
+  .rp-root input.rp-in:not([type="checkbox"]):focus,
+  .rp-root select.rp-in:focus,
+  .rp-root textarea.rp-in:focus {
+    border-color: var(--rp-blue-active) !important;
+    box-shadow: 0 0 0 3px rgba(63, 127, 217, .15) !important;
+  }
+  .rp-root input.rp-in--lock:not([type="checkbox"]) { background-color: var(--rp-lock-bg) !important; }
+  .rp-root input.rp-in--amber:not([type="checkbox"]) {
+    background-color: var(--rp-amber-bg) !important;
+    border-color: var(--rp-amber-border) !important;
+    color: var(--rp-amber-text) !important;
+  }
+  .rp-root input.rp-in--big:not([type="checkbox"]) { height: 46px; font-size: 18px !important; }
+  .rp-root input.rp-in--ok:not([type="checkbox"]) {
+    font-weight: 700 !important;
+    background-color: var(--rp-ok-bg) !important;
+    border: 1.5px solid var(--rp-ok-border) !important;
+    color: var(--rp-ok-text) !important;
+  }
+  .rp-root input.rp-in--cero:not([type="checkbox"]) {
+    font-weight: 700 !important;
+    background-color: var(--rp-panel) !important;
+    border: 1.5px solid var(--rp-blue) !important;
+    color: var(--rp-navy) !important;
+  }
+  .rp-root input.rp-in--peso:not([type="checkbox"]) { padding-left: 36px !important; }
+  .rp-root input.rp-in--ico:not([type="checkbox"]) { padding-left: 74px !important; font-size: 18px !important; }
+  .rp-root select.rp-in { height: 48px; appearance: none; padding-right: 44px !important; }
+  .rp-root textarea.rp-in {
+    height: auto; min-height: 78px; padding: 14px 18px !important;
+    font-size: 16px !important; font-weight: 400 !important;
+    background-color: var(--rp-lock-bg) !important; resize: vertical;
+  }
+  .rp-root .rp-in--err:not([type="checkbox"]) { border-color: var(--rp-red) !important; }
+}
+
+/* ── Método de pago ────────────────────────────────────────────────────── */
+.rp-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.rp-seg-btn {
+  height: 56px; display: flex; align-items: center; justify-content: center; gap: 16px;
+  border-radius: 14px; border: 1px solid var(--rp-seg-border); background: var(--rp-seg-bg);
+  color: var(--rp-navy); font-size: 17px; font-weight: 600; font-family: inherit; cursor: pointer;
+}
+.rp-seg-btn[aria-checked="true"] {
+  border: 2px solid var(--rp-blue-active); background: var(--rp-blue-bg);
+  box-shadow: 0 0 0 4px rgba(63, 127, 217, .15);
+}
+.rp-panel {
+  background: var(--rp-panel); border-radius: 12px; padding: 16px 18px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.rp-panel-head { display: flex; gap: 16px; align-items: flex-start; }
+.rp-panel-title { font-size: 18px; font-weight: 700; color: var(--rp-navy); }
+.rp-panel-sub { font-size: 14px; color: var(--rp-muted); }
+.rp-row2--tight { gap: 14px; }
+.rp-err { font-size: 13px; color: var(--rp-red); }
+
+/* ── Casillas y cámara ─────────────────────────────────────────────────── */
+.rp-checks-row { display: flex; align-items: center; gap: 16px; }
+.rp-checks { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.rp-check {
+  display: flex; align-items: center; gap: 14px;
+  font-size: 18px; font-weight: 600; color: var(--rp-navy); cursor: pointer;
+}
+.rp-check input { width: 26px; height: 26px; margin: 0; accent-color: var(--rp-blue); flex: none; cursor: pointer; }
+.rp-check--renovar { color: var(--rp-blue); }
+.rp-check--multa { color: #b91c1c; }
+.rp-check--multa input { accent-color: #dc2626; }
+.rp-check--extra { color: #92400e; }
+.rp-check--extra input { accent-color: #d97706; }
+.rp-cam {
+  width: 48px; height: 48px; flex: none; display: grid; place-items: center; border-radius: 14px;
+  cursor: pointer; box-shadow: 0 1px 3px rgba(30, 70, 140, .1);
+  border: 1px solid var(--rp-seg-border); background: #f4f7fb; color: var(--rp-navy);
+  align-self: flex-start;
+}
+.rp-cam--ok { border-color: var(--rp-ok-border); background: var(--rp-ok-bg); color: var(--rp-ok-text); }
+.rp-file { display: none; }
+.rp-foto { position: relative; border: 1px solid var(--rp-card-border); border-radius: 12px; overflow: hidden; background: #f4f7fb; }
+.rp-foto img { display: block; width: 100%; max-height: 180px; object-fit: contain; }
+.rp-foto-x {
+  position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 999px; border: 0;
+  display: grid; place-items: center; background: var(--rp-red); color: #fff; cursor: pointer;
+}
+
+/* ── Avisos (multa, cronograma, americano, renovación) ─────────────────── */
+.rp-aviso {
+  display: flex; align-items: flex-start; gap: 10px; border-radius: 12px; padding: 10px 14px;
+  font-size: 15px; line-height: 1.35;
+  border: 1px solid var(--rp-amber-border); background: var(--rp-amber-bg); color: var(--rp-amber-text);
+}
+.rp-aviso--rojo { border-color: #f3a5a5; background: #fdecec; color: #991b1b; justify-content: space-between; align-items: center; }
+.rp-aviso b { font-weight: 800; }
+.rp-notas-label { font-size: 17px; color: var(--rp-text); }
+
+/* ── Acciones ──────────────────────────────────────────────────────────── */
+/* LA BARRA DE COBRAR NO SE ESCONDE DETRÁS DEL TECLADO: va pegada al fondo
+   y sube lo justo cuando el teclado se abre (`subirBarra`, en px de la
+   pantalla: se divide por la escala porque la barra vive dentro del zoom). */
+.rp-actions {
+  position: sticky; bottom: 0; z-index: 20;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+  margin: 4px -22px -22px; padding: 12px 22px 22px;
+  background: #fff; border-radius: 0 0 16px 16px;
+}
+.rp-btn {
+  height: 56px; border-radius: 14px; font-size: 18px; font-weight: 700; font-family: inherit; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.rp-btn--cancel { border: 1px solid #c9d3e0; background: #fff; color: var(--rp-navy); }
+.rp-btn--cobrar {
+  border: 0; background: var(--rp-green); color: #fff; box-shadow: 0 4px 12px rgba(21, 163, 74, .25);
+}
+.rp-btn--cobrar:hover:not(:disabled) { background: var(--rp-green-hover); }
+.rp-btn--cobrar:disabled { opacity: .5; cursor: not-allowed; }

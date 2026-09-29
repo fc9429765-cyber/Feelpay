@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { DollarSign, X, Check, Eye, Clock, ArrowLeftRight, Camera, Edit, FileText, History, User, MoreVertical, Receipt, Loader2, CheckCircle2, XCircle, Users, Pencil, Trash2, RefreshCw, ShoppingCart, MapPinOff, MapPin, AlertCircle, Play, Share2, FileDown, ChevronUp, ChevronDown } from "lucide-react"
+import { DollarSign, X, Check, Eye, Clock, ArrowLeftRight, Camera, Edit, FileText, History, User, MoreVertical, Receipt, Loader2, CheckCircle2, XCircle, Users, Pencil, Trash2, RefreshCw, ShoppingCart, MapPinOff, MapPin, AlertCircle, Play, Share2, FileDown, ChevronUp, ChevronDown, Banknote, PieChart } from "lucide-react"
 import { RutaNoIniciada } from "@/components/views/ruta-no-iniciada"
 import { leerAplazados, aplazar, quitarAplazado, horaDeAplazado } from "@/lib/aplazados"
 import {
@@ -67,6 +67,8 @@ import { CompartirComprobanteDialog } from "@/components/compartir-comprobante-d
 import { getUsuarioSesion } from "@/lib/movimientos"
 import { obtenerUbicacion, evaluarGeocerca, formatearDistancia, type ResultadoGeocerca, type UbicacionMedida } from "@/lib/geo"
 import { useEstadoGps } from "@/lib/use-gps"
+import { fotoParaCola } from "@/lib/foto-offline"
+import "./register-payment.css"
 
 /**
  * LAS CASILLAS DEL FORMULARIO DE PAGO.
@@ -85,6 +87,9 @@ import { useEstadoGps } from "@/lib/use-gps"
  * `.casilla-info` y `.casilla-escribible` junto a esa regla, que es donde se
  * decide el color de un input.
  */
+/** El `$` lo pinta el diseño afuera del campo; `mostrarMonto` ya lo trae. */
+const sinSigno = (texto: string) => texto.replace(/^\$\s*/, "")
+
 const CASILLA_INFO = "h-7 md:h-10 text-xs md:text-sm font-bold casilla-info"
 
 /** La misma casilla, pero la que SE ESCRIBE: más oscura, para que el número que se teclea resalte. */
@@ -518,7 +523,16 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
   /** Cuánto sube la barra de cobrar para no quedar debajo del teclado. */
   const [subirBarra, setSubirBarra] = useState(0)
   const barraCobrarRef = useRef<HTMLDivElement | null>(null)
+  /** El `id` de la cuenta (tabla `cuentas`) a la que entró la transferencia. */
   const [accountNumber, setAccountNumber] = useState("")
+  /**
+   * LAS CUENTAS DE VERDAD DE LA RUTA. Antes la lista era de ejemplo
+   * (Davivienda/Bancolombia/Nequi fijas) y lo elegido no viajaba a ningún
+   * lado. Se guardan en el teléfono para poder elegir sin señal.
+   */
+  const [cuentasPago, setCuentasPago] = useState<{ id: string; nombre: string }[]>([])
+  /** Las notas del pago: viajan como `observacion` del evento. */
+  const [notasPago, setNotasPago] = useState("")
   const [isCancelada, setIsCancelada] = useState(false)
   /**
    * RENOVAR: refinanciar el crédito en el mismo cobro (scripts/123).
@@ -1558,6 +1572,28 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     }
   }, [selectedClient])
 
+  // Las cuentas de la ruta para las transferencias. Se guardan en el
+  // teléfono: sin señal se elige de la última lista conocida.
+  useEffect(() => {
+    if (!currentRutaId) return
+    const clave = `cuentasRuta:${currentRutaId}`
+    try {
+      const guardadas = JSON.parse(localStorage.getItem(clave) ?? "null")
+      if (Array.isArray(guardadas)) setCuentasPago(guardadas)
+    } catch { /* ilegible */ }
+    let cancelado = false
+    fetch(`/api/cuentas?ruta=${currentRutaId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelado || !Array.isArray(data)) return
+        const lista = data.map((c: { id: string | number; nombre: string }) => ({ id: String(c.id), nombre: c.nombre }))
+        setCuentasPago(lista)
+        try { localStorage.setItem(clave, JSON.stringify(lista)) } catch { /* modo privado */ }
+      })
+      .catch(() => { /* sin señal: queda la guardada */ })
+    return () => { cancelado = true }
+  }, [currentRutaId])
+
   const handleSelectClient = (client: DisplayClient) => {
     // El formulario abre ARRIBA. Si se venía de más abajo en la lista, la
     // pantalla quedaba corrida y había que buscar el botón de cobrar.
@@ -1571,6 +1607,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     setMontoEfectivoMixto("")
     setMontoTransfMixto("")
     setAccountNumber("")
+    setNotasPago("")
     setPaymentPhoto(null)
     setIsCancelada(false)
     setRenovar(false)
@@ -1594,6 +1631,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     setMontoEfectivoMixto("")
     setMontoTransfMixto("")
     setAccountNumber("")
+    setNotasPago("")
     setPaymentPhoto(null)
     setIsCancelada(false)
     setRenovar(false)
@@ -1628,8 +1666,9 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
 
     // Con dos formas, cada una tiene que traer plata y entre las dos sumar
     // el monto del pago: lo que se registra es exactamente lo que se cobró.
+    // Se escribe el efectivo; la transferencia es lo que falta para el monto.
     const partEfectivo = dosFormas ? Number.parseFloat(montoEfectivoMixto) || 0 : 0
-    const partTransf = dosFormas ? Number.parseFloat(montoTransfMixto) || 0 : 0
+    const partTransf = dosFormas ? Math.max(0, monto - partEfectivo) : 0
     if (dosFormas && (partEfectivo <= 0 || partTransf <= 0)) {
       toast({
         title: "Faltan los valores",
@@ -1646,6 +1685,16 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
       })
       return
     }
+
+    // La transferencia dice A QUÉ CUENTA entró: sin eso secretaría no puede
+    // cuadrar el extracto. Solo se exige si la ruta tiene cuentas cargadas.
+    if ((dosFormas || paymentMethod === "transferencia") && cuentasPago.length > 0 && !accountNumber) {
+      toast({ title: "Falta la cuenta", description: "Elige la cuenta a la que entró la transferencia.", variant: "destructive" })
+      return
+    }
+    const cuentaSnap = accountNumber || null
+    const notasSnap = notasPago.trim() || null
+    const fotoSnap = paymentPhoto
 
     // RENOVAR: se valida TODO antes de cobrar, para no dejar un pago hecho y
     // una renovación rebotada por algo que se podía saber desde acá.
@@ -1899,6 +1948,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
           metodo_pago: "transferencia",
           cliente_nombre: clientSnapshot.nombre,
           extender_cuotas: 0,
+          cuenta_id: cuentaSnap,
         }
         const r1 = await enviarOEncolar({
           tipo: "gestion",
@@ -1959,6 +2009,11 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
           metodo_pago: metodoPrincipal,
           cliente_nombre: clientSnapshot.nombre,
           extender_cuotas: debeExtender ? cantidadExtenderSnap : 0,
+          // Las notas, la foto y la cuenta van en el MISMO evento (script
+          // 125 las guarda en `detalle`; `observacion` ya existía).
+          observacion: notasSnap,
+          foto_url: fotoSnap,
+          cuenta_id: metodoPrincipal === "transferencia" ? cuentaSnap : null,
       }
       const descripcionPrincipal = dosFormasSnap
         ? `Pago (efectivo) — ${clientSnapshot.nombre} ($${montoPrincipal.toLocaleString()})`
@@ -2052,7 +2107,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
           metodo_pago: metodoPrincipal,
           origen: "campo",
           referencia_gestion_id: null,
-          observacion: null,
+          observacion: notasSnap,
         }
         void parcharCache<DashboardPagosResult>("dashboard-pagos", currentRutaId, (datos) =>
           gestionLocalTransf
@@ -2435,12 +2490,20 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     }
   }
 
-  const handlePhotoCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /**
+   * LA FOTO DEL PAGO, COMPRIMIDA. Viaja con el evento (`foto_url`) y la cola
+   * la sube antes de mandarlo (lib/foto-offline.ts), con o sin señal. Antes
+   * se tomaba y no se guardaba en ningún lado.
+   */
+  const handlePhotoCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      const reader = new FileReader()
-      reader.onloadend = () => setPaymentPhoto(reader.result as string)
-      reader.readAsDataURL(file)
+    e.target.value = ""
+    if (!file) return
+    try {
+      setPaymentPhoto(await fotoParaCola(file))
+    } catch (err) {
+      console.error("[v0] No se pudo leer la foto del pago:", err)
+      toast({ title: "No se pudo leer la foto", description: "Intenta tomarla de nuevo.", variant: "destructive" })
     }
   }
 
@@ -4919,555 +4982,502 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
           </div>{/* fin overflow-hidden */}
         </Card>
       ) : (
-        // SIN EL RELLENO POR DEFECTO DE LA TARJETA (24px arriba, abajo y
-        // entre título y contenido): en un teléfono chico era casi una fila
-        // entera de aire, y el botón de cobrar quedaba debajo del borde.
-        <Card className="gap-1 py-1.5 md:gap-4 md:py-5">
-          {/* EL ENCABEZADO, A LA MITAD.
-              Son 24px menos de alto en el teléfono, y ese alto es lo que se
-              pelea con el teclado: con el teclado abierto, el botón de
-              registrar el pago quedaba justo debajo del borde y había que
-              esconderlo para llegar. */}
-          {/* En el teléfono no va: la barra de arriba ya dice "Registrar Pago",
-              y ese renglón es el que faltaba para que el botón de cobrar se
-              vea sin bajar. */}
-          <CardHeader className="hidden px-3 pt-2 pb-1 md:grid md:px-6 md:pt-4 md:pb-2">
-            <CardTitle className="text-sm font-bold md:text-lg">Informacion del Pago</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1.5 md:space-y-3 px-3 pb-2 pt-1 md:px-6 md:pb-6 md:pt-2 [&_input]:scroll-mb-24 [&_textarea]:scroll-mb-24">
-            {renderAvisoGeocerca()}
-            {/* Alerta: última cuota programada de préstamo americano */}
-            {selectedClient.tipoAmortizacion?.toLowerCase().trim() === "americano" &&
-              selectedClient.esUltimaCuotaPendiente && (
-                <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning/10 px-3 py-2">
-                  <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-                  <p className="text-sm font-semibold text-warning">
-                    Última cuota programada — ¿extender cuotas?
-                  </p>
-                </div>
-              )}
-            {/* EL CRONOGRAMA SE ACABO Y TODAVIA DEBE.
-                No bloquea el cobro —la plata entra igual y se aplica al
-                saldo— pero avisa, porque mientras el plan este agotado el
-                cliente no suma a la meta del dia: no tiene ninguna cuota que
-                venza hoy. Quien lo resuelve es secretaria desde el Monitoreo,
-                que es donde esta el boton de completar. */}
-            {selectedClient.cronogramaAgotado && (
-              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning/10 px-3 py-2">
-                <AlertCircle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-                <p className="text-xs md:text-sm text-foreground">
-                  <span className="font-bold">Se acabaron las cuotas y todavía debe {fmtMoneda(selectedClient.saldo)}.</span>{" "}
-                  El cobro se registra igual, pero pídele a secretaría que le complete el cronograma:
-                  mientras tanto no cuenta en la meta del día.
-                </p>
-              </div>
-            )}
+        // EL DISEÑO DE PROMPT_Registrar_Pago.md (RegistrarPago.jsx), con su
+        // propio CSS (`register-payment.css`, prefijo `rp-`). Mantiene el
+        // armado a cualquier ancho: en un teléfono se REDUCE, no se apila, y
+        // así el botón de cobrar entra en la pantalla sin bajar.
+        //
+        // Lo que el diseño no trae y la app sí necesita (multa, renovar,
+        // prórroga, cuota adicional, geocerca, avisos del cronograma) va en el
+        // mismo lenguaje visual, en el lugar donde se decide.
+        (() => {
+          const saldo = selectedClient.saldo
+          const cuotaRef = Number(selectedClient.nextPaymentCuota) || 0
+          const monto = Number.parseFloat(paymentAmount) || 0
+          const nuevoSaldo = Math.max(0, saldo - monto)
+          const efectivoMixto = Number.parseFloat(montoEfectivoMixto) || 0
+          const transfMixto = Math.max(0, monto - efectivoMixto)
+          const errorMixto = dosFormas && efectivoMixto > monto
+          const hayTransferencia = dosFormas ? transfMixto > 0 : paymentMethod === "transferencia"
+          // Sin cuentas cargadas para la ruta no se exige: bloquear el cobro
+          // por un catálogo vacío dejaría al cobrador sin poder registrar.
+          const faltaCuenta = hayTransferencia && cuentasPago.length > 0 && !accountNumber
+          const multa = pagarMulta && selectedClient.multaPendiente ? selectedClient.multaPendiente.valor : 0
+          const invalido =
+            saving || (monto <= 0 && !extenderCuotas) || monto > saldo || errorMixto || faltaCuenta
+          const esAmericano = selectedClient.tipoAmortizacion?.toLowerCase().trim() === "americano"
+          const metodo: "efectivo" | "transferencia" | "mixto" = dosFormas
+            ? "mixto"
+            : paymentMethod === "transferencia" ? "transferencia" : "efectivo"
 
-            {/* Primera fila: Apodo, Saldo y Ultima Pago */}
-            <div className="grid gap-2 md:gap-3 grid-cols-3">
-              <div className="space-y-1 md:space-y-1.5">
-                <Label htmlFor="apodo" className="text-xs font-bold md:text-sm">Apodo</Label>
-                <Input id="apodo" type="text" value={selectedClient.nombre} readOnly className={CASILLA_INFO} />
-              </div>
-              <div className="space-y-1 md:space-y-1.5">
-                <Label htmlFor="saldoCliente" className="text-xs font-bold md:text-sm">Saldo a Pagar</Label>
-                <Input
-                  id="saldoCliente"
-                  type="text"
-                  value={`$${Math.round(selectedClient.saldo).toLocaleString()}`}
-                  readOnly
-                  className="h-7 md:h-10 text-xs md:text-sm font-bold casilla-alerta"
-                />
-              </div>
-              <div className="space-y-1 md:space-y-1.5">
-                <Label htmlFor="lastPaymentDate" className="text-xs font-bold md:text-sm">Ult. Pago</Label>
-                <Input id="lastPaymentDate" type="text" value={selectedClient.ultimoPagoFecha || "N/A"} readOnly className={CASILLA_INFO} />
-              </div>
-            </div>
+          // Cambiar el monto recalcula las cuotas; cambiar las cuotas, el monto.
+          const cambiarMonto = (texto: string) => {
+            let m = Number.parseFloat(leerMonto(texto)) || 0
+            if (m > saldo) {
+              toast({
+                title: "Monto excede el saldo",
+                description: `El monto del pago no puede ser mayor al saldo a pagar ($${Math.round(saldo).toLocaleString("es-CO")})`,
+                variant: "destructive",
+              })
+              m = saldo
+            }
+            setPaymentAmount(m > 0 ? String(m) : "")
+            if (dosFormas) setMontoEfectivoMixto((c) => String(Math.min(Number.parseFloat(c) || 0, m)))
+            if (!isPartialPayment && cuotaRef > 0) {
+              setNumCuotas(Math.min(cuotasQueLeQuedan, Math.max(1, Math.round(m / cuotaRef))))
+            }
+          }
+          const cambiarCuotas = (valor: string) => {
+            const n = Number.parseInt(valor)
+            setNumCuotas(n)
+            if (!isPartialPayment) {
+              const m = montoAProponer(cuotaRef, saldo, n)
+              setPaymentAmount(m.toString())
+              if (dosFormas) setMontoEfectivoMixto(String(Math.round(m / 2)))
+            }
+          }
+          const elegirMetodo = (id: "efectivo" | "transferencia" | "mixto") => {
+            if (id === "mixto") {
+              setDosFormas(true)
+              setPaymentMethod("efectivo")
+              setMontoEfectivoMixto(String(Math.round(monto / 2)))
+            } else {
+              setDosFormas(false)
+              setPaymentMethod(id)
+            }
+          }
 
-            {/* Multa pendiente: valor y origen (fallas que la generaron).
-                Informativo — se muestra siempre que exista, independientemente
-                de si el checkbox "Pagar multa" de abajo está marcado. */}
-            {selectedClient.multaPendiente && (
-              <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-1.5">
-                <span className="text-[11px] md:text-sm text-red-700">
-                  Multa por fallas
-                  {selectedClient.multaPendiente.cuotasMora != null
-                    ? ` — generada por ${selectedClient.multaPendiente.cuotasMora} falla${selectedClient.multaPendiente.cuotasMora !== 1 ? "s" : ""}`
-                    : ""}
-                </span>
-                <span className="text-xs md:text-sm font-bold text-red-700 shrink-0">
-                  ${selectedClient.multaPendiente.valor.toLocaleString("es-CO")}
-                </span>
-              </div>
-            )}
-
-            {/* Segunda fila: Monto del Pago + Nuevo Saldo */}
-            <div className="grid grid-cols-2 gap-2 md:gap-3">
-              <div className="space-y-1 md:space-y-1.5">
-                <Label htmlFor="paymentAmount" className="text-xs font-bold md:text-sm">Monto del Pago</Label>
-                <Input
-                  id="paymentAmount"
-                  /* `type="text"` y no `number`: un input numérico no deja
-                     pintar los puntos de miles. `inputMode="numeric"` saca
-                     igual el teclado de números en el teléfono. */
-                  type="text"
-                  inputMode="numeric"
-                  value={mostrarMonto(paymentAmount)}
-                  onChange={(e) => {
-                    const crudo = leerMonto(e.target.value)
-                    const saldoDisponible = selectedClient.saldo
-                    const numValue = Number.parseFloat(crudo)
-                    if (!isNaN(numValue) && numValue > saldoDisponible) {
-                      toast({
-                        title: "Monto excede el saldo",
-                        description: `El monto del pago no puede ser mayor al saldo a pagar ($${saldoDisponible.toLocaleString()})`,
-                        variant: "destructive",
-                      })
-                      setPaymentAmount(saldoDisponible.toString())
-                      return
-                    }
-                    setPaymentAmount(crudo)
-                  }}
-                  readOnly={!isPartialPayment}
-                  className={
-                    isPartialPayment
-                      ? `h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`
-                      : CASILLA_INFO
-                  }
-                />
-              </div>
-              <div className="space-y-1 md:space-y-1.5">
-                <Label className="text-xs font-bold md:text-sm">Nuevo Saldo</Label>
-                {/* El verde tambien pasa al borde y al texto: el relleno
-                    completaba el semaforo (cian, navy, ambar, verde) en una
-                    pantalla de telefono. */}
-                {/* El verde del token da 2.96:1 sobre el campo claro: como
-                    relleno se leia (era letra oscura sobre verde palido) pero
-                    como TEXTO no llega. Se usa uno mas oscuro, 5.8:1. */}
-                <div className="h-7 md:h-10 flex items-center px-3 rounded-md border bg-input"
-                     style={{ borderColor: "oklch(0.45 0.13 165)" }}>
-                  <span className="text-xs md:text-sm font-bold" style={{ color: "oklch(0.45 0.13 165)" }}>
-                    ${Math.max(0, selectedClient.saldo - (Number.parseFloat(paymentAmount) || 0)).toLocaleString("es-CO")}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Tercera fila: Numero de Cuotas y Metodo de Pago */}
-            <div className="grid gap-2 md:gap-3 grid-cols-2">
-              <div className="space-y-1 md:space-y-1.5">
-                <Label htmlFor="numCuotas" className="whitespace-nowrap text-xs font-bold md:text-sm">
-                  Cuotas
-                  {/* CUÁNTAS LE QUEDAN, dicho al lado del selector: sin esto,
-                      que la lista llegue hasta 7 y no hasta 10 se lee como un
-                      error de la app. */}
-                  <span className="ml-1 font-normal text-muted-foreground">
-                    (quedan {cuotasQueLeQuedan})
-                  </span>
-                </Label>
-                <Select
-                  value={numCuotas.toString()}
-                  onValueChange={(value) => {
-                    const n = Number.parseInt(value)
-                    setNumCuotas(n)
-                    if (!isPartialPayment && selectedClient) {
-                      setPaymentAmount(
-                        montoAProponer(selectedClient.nextPaymentCuota, selectedClient.saldo, n).toString(),
-                      )
-                    }
-                  }}
-                  disabled={isPartialPayment}
+          const selectorCuenta = (
+            <label className="rp-field">
+              <span className="rp-label">Cuenta transferencia</span>
+              <span className="rp-wrap">
+                <select
+                  className={`rp-in${faltaCuenta ? " rp-in--err" : ""}`}
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
                 >
-                  <SelectTrigger className="h-7 md:h-10 text-xs md:text-base">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {/* SOLO LO QUE DEBE. La lista era 1..10 fija, así que a un
-                        cliente al que le quedaban tres cuotas se le ofrecían
-                        diez: elegir 5 armaba un cobro por más del saldo, y lo
-                        único que lo frenaba era el aviso de "monto excede el
-                        saldo" —después de haberlo elegido—. */}
-                    {Array.from({ length: cuotasQueLeQuedan }, (_, i) => i + 1).map((num) => (
-                      <SelectItem key={num} value={num.toString()} className="text-xs font-bold md:text-base">{num}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                  <option value="">
+                    {cuentasPago.length ? "Seleccionar cuenta..." : "No hay cuentas para esta ruta"}
+                  </option>
+                  {cuentasPago.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </select>
+                <span className="rp-abs" style={{ right: 18 }}><ChevronDown size={20} color="#5b6573" strokeWidth={1.75} /></span>
+              </span>
+            </label>
+          )
 
-              <div className="space-y-1 md:space-y-1.5">
-                <Label htmlFor="paymentMethod" className="text-xs font-bold md:text-base">Metodo de Pago</Label>
-                {/* Tarjeta ya no es una forma de pago. La tercera opción es
-                    pagar con DOS formas: parte en efectivo y parte en
-                    transferencia, cada una con su valor. */}
-                <Select
-                  value={dosFormas ? "dos" : paymentMethod}
-                  onValueChange={(v) => {
-                    if (v === "dos") {
-                      setDosFormas(true)
-                      // Arranca con todo en efectivo: el cobrador escribe la
-                      // parte en transferencia y el efectivo se completa solo.
-                      const total = Number.parseFloat(paymentAmount) || 0
-                      setMontoEfectivoMixto(total > 0 ? String(total) : "")
-                      setMontoTransfMixto("")
-                    } else {
-                      setDosFormas(false)
-                      setPaymentMethod(v)
-                    }
-                  }}
-                >
-                  <SelectTrigger className="h-7 md:h-10 text-xs md:text-base">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="efectivo" className="text-xs font-bold md:text-base">Efectivo</SelectItem>
-                    <SelectItem value="transferencia" className="text-xs font-bold md:text-base">Transferencia</SelectItem>
-                    <SelectItem value="dos" className="text-xs font-bold md:text-base">Efectivo + Transferencia</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+          return (
+            <div className="rp-root">
+              <div className="rp-frame">
+                <section className="rp-card [&_input]:scroll-mb-24 [&_textarea]:scroll-mb-24">
+                  <h2 className="rp-title">Información del Pago</h2>
 
-            {/* ── Los dos valores cuando se paga con dos formas ─────────────
-                Escribir uno completa el otro con lo que falta para el monto
-                del pago; igual se pueden corregir los dos. Abajo se dice si
-                suman o no, antes de cobrar. */}
-            {dosFormas && (() => {
-              const total = Number.parseFloat(paymentAmount) || 0
-              const ef = Number.parseFloat(montoEfectivoMixto) || 0
-              const tr = Number.parseFloat(montoTransfMixto) || 0
-              const cuadra = Math.round(ef + tr) === Math.round(total)
-              const escribir = (valor: string, cual: "ef" | "tr") => {
-                const crudo = leerMonto(valor)
-                const n = Number.parseFloat(crudo) || 0
-                const resto = total - n > 0 ? String(total - n) : ""
-                if (cual === "ef") { setMontoEfectivoMixto(crudo); setMontoTransfMixto(resto) }
-                else { setMontoTransfMixto(crudo); setMontoEfectivoMixto(resto) }
-              }
-              return (
-                <div className="space-y-1">
-                  <div className="grid grid-cols-2 gap-2 md:gap-3">
-                    <div className="space-y-1 md:space-y-1.5">
-                      <Label htmlFor="montoEfectivoMixto" className="text-xs font-bold md:text-sm">Valor en efectivo</Label>
-                      <Input
-                        id="montoEfectivoMixto"
-                        type="text"
-                        inputMode="numeric"
-                        value={mostrarMonto(montoEfectivoMixto)}
-                        onChange={(e) => escribir(e.target.value, "ef")}
-                        className={`h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`}
-                      />
+                  {renderAvisoGeocerca()}
+                  {esAmericano && selectedClient.esUltimaCuotaPendiente && (
+                    <div className="rp-aviso">
+                      <AlertCircle size={20} strokeWidth={1.75} style={{ flex: "none", marginTop: 1 }} />
+                      <b>Última cuota programada — ¿extender cuotas?</b>
                     </div>
-                    <div className="space-y-1 md:space-y-1.5">
-                      <Label htmlFor="montoTransfMixto" className="text-xs font-bold md:text-sm">Valor en transferencia</Label>
-                      <Input
-                        id="montoTransfMixto"
-                        type="text"
-                        inputMode="numeric"
-                        value={mostrarMonto(montoTransfMixto)}
-                        onChange={(e) => escribir(e.target.value, "tr")}
-                        className={`h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`}
+                  )}
+                  {/* EL CRONOGRAMA SE ACABO Y TODAVIA DEBE. No bloquea el
+                      cobro, pero mientras tanto no cuenta en la meta del día. */}
+                  {selectedClient.cronogramaAgotado && (
+                    <div className="rp-aviso">
+                      <AlertCircle size={20} strokeWidth={1.75} style={{ flex: "none", marginTop: 1 }} />
+                      <span>
+                        <b>Se acabaron las cuotas y todavía debe {fmtMoneda(saldo)}.</b>{" "}
+                        El cobro se registra igual, pero pídele a secretaría que le complete el cronograma:
+                        mientras tanto no cuenta en la meta del día.
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="rp-row3">
+                    <label className="rp-field">
+                      <span className="rp-label">Apodo</span>
+                      <input id="apodo" readOnly value={selectedClient.nombre} className="rp-in rp-in--lock" />
+                    </label>
+                    <label className="rp-field">
+                      <span className="rp-label">Saldo a Pagar</span>
+                      <input id="saldoCliente" readOnly value={`$${Math.round(saldo).toLocaleString("es-CO")}`} className="rp-in rp-in--amber" />
+                    </label>
+                    <label className="rp-field">
+                      <span className="rp-label">Últ. Pago</span>
+                      <input id="lastPaymentDate" readOnly value={selectedClient.ultimoPagoFecha || "—"} className="rp-in rp-in--lock" />
+                    </label>
+                  </div>
+
+                  {/* Multa pendiente: valor y origen. Informativo. */}
+                  {selectedClient.multaPendiente && (
+                    <div className="rp-aviso rp-aviso--rojo">
+                      <span>
+                        Multa por fallas
+                        {selectedClient.multaPendiente.cuotasMora != null
+                          ? ` — generada por ${selectedClient.multaPendiente.cuotasMora} falla${selectedClient.multaPendiente.cuotasMora !== 1 ? "s" : ""}`
+                          : ""}
+                      </span>
+                      <b>${selectedClient.multaPendiente.valor.toLocaleString("es-CO")}</b>
+                    </div>
+                  )}
+
+                  <div className="rp-row2">
+                    <label className="rp-field">
+                      <span className="rp-label">Monto del Pago</span>
+                      <span className="rp-wrap">
+                        <span className="rp-abs" style={{ left: 20 }}>$</span>
+                        {/* `type="text"`: un input numérico no deja pintar los
+                            puntos de miles. `inputMode` saca el teclado de números. */}
+                        <input
+                          id="paymentAmount"
+                          type="text"
+                          inputMode="numeric"
+                          value={sinSigno(mostrarMonto(paymentAmount))}
+                          onChange={(e) => cambiarMonto(e.target.value)}
+                          className="rp-in rp-in--big rp-in--peso"
+                        />
+                      </span>
+                    </label>
+                    <label className="rp-field">
+                      <span className="rp-label">Nuevo Saldo</span>
+                      <input
+                        readOnly
+                        value={`$${Math.round(nuevoSaldo).toLocaleString("es-CO")}`}
+                        className={`rp-in rp-in--big ${nuevoSaldo === 0 ? "rp-in--cero" : "rp-in--ok"}`}
                       />
+                    </label>
+                  </div>
+
+                  <div className="rp-row2">
+                    <label className="rp-field">
+                      {/* CUÁNTAS LE QUEDAN, al lado del selector: sin esto, que
+                          la lista llegue hasta 7 y no hasta 10 parece un error. */}
+                      <span className="rp-label">
+                        Nro Cuotas<span className="rp-label-note">(le quedan {cuotasQueLeQuedan})</span>
+                      </span>
+                      <span className="rp-wrap">
+                        <select
+                          id="numCuotas"
+                          className="rp-in"
+                          value={String(numCuotas)}
+                          onChange={(e) => cambiarCuotas(e.target.value)}
+                          disabled={isPartialPayment}
+                        >
+                          {Array.from({ length: cuotasQueLeQuedan }, (_, i) => i + 1).map((n) => (
+                            <option key={n} value={n}>{n}</option>
+                          ))}
+                        </select>
+                        <span className="rp-abs" style={{ right: 18 }}><ChevronDown size={20} color="#5b6573" strokeWidth={1.75} /></span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="rp-field" style={{ gap: 10 }}>
+                    <span className="rp-label">Método de Pago</span>
+                    <div role="radiogroup" className="rp-seg">
+                      {([
+                        ["efectivo", "Efectivo", Banknote],
+                        ["transferencia", "Transferencia", ArrowLeftRight],
+                        ["mixto", "Mixto", PieChart],
+                      ] as const).map(([id, texto, Icono]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          role="radio"
+                          aria-checked={metodo === id}
+                          className="rp-seg-btn"
+                          onClick={() => elegirMetodo(id)}
+                        >
+                          <Icono
+                            size={26}
+                            strokeWidth={1.75}
+                            fill={id === "mixto" ? "#1f5fc4" : "none"}
+                            color={id === "mixto" ? "#1f5fc4" : "#0f3a80"}
+                          />
+                          {texto}
+                        </button>
+                      ))}
                     </div>
                   </div>
-                  {/* Solo se avisa cuando NO suman, que es cuando hace falta:
-                      un renglón fijo de "sí suman" empujaba el botón de cobrar
-                      fuera de la pantalla en un teléfono chico. */}
-                  {!cuadra && (
-                    <p className="text-[11px] md:text-sm font-semibold text-destructive">
-                      Suman ${(ef + tr).toLocaleString("es-CO")} y el pago es de ${total.toLocaleString("es-CO")}.
-                    </p>
+
+                  {/* PAGO EN DOS MEDIOS: se escribe el efectivo y la
+                      transferencia es lo que falta. En el libro son dos
+                      eventos, uno por forma (ver `dosFormas`). */}
+                  {dosFormas && (
+                    <div className="rp-panel">
+                      <div className="rp-panel-head">
+                        <PieChart size={26} fill="#1f5fc4" color="#1f5fc4" strokeWidth={1.75} style={{ flex: "none", marginTop: 2 }} />
+                        <div>
+                          <div className="rp-panel-title">Pago en dos medios</div>
+                          <div className="rp-panel-sub">Ingresá cuánto se cobra en cada medio.</div>
+                        </div>
+                      </div>
+                      <div className="rp-row2 rp-row2--tight">
+                        <label className="rp-field">
+                          <span className="rp-label">Efectivo</span>
+                          <span className="rp-wrap">
+                            <span className="rp-abs" style={{ left: 16 }}><Banknote size={24} strokeWidth={1.75} /></span>
+                            <span className="rp-abs" style={{ left: 58 }}>$</span>
+                            <input
+                              id="montoEfectivoMixto"
+                              type="text"
+                              inputMode="numeric"
+                              value={sinSigno(mostrarMonto(montoEfectivoMixto))}
+                              onChange={(e) => setMontoEfectivoMixto(leerMonto(e.target.value))}
+                              className={`rp-in rp-in--ico${errorMixto ? " rp-in--err" : ""}`}
+                            />
+                          </span>
+                        </label>
+                        <label className="rp-field">
+                          <span className="rp-label">Transferencia</span>
+                          <span className="rp-wrap">
+                            <span className="rp-abs" style={{ left: 16 }}><ArrowLeftRight size={24} strokeWidth={1.75} /></span>
+                            <span className="rp-abs" style={{ left: 58 }}>$</span>
+                            <input
+                              id="montoTransfMixto"
+                              readOnly
+                              value={Math.round(transfMixto).toLocaleString("es-CO")}
+                              className="rp-in rp-in--ico"
+                            />
+                          </span>
+                        </label>
+                      </div>
+                      {errorMixto && <span className="rp-err">El efectivo no puede superar el monto del pago.</span>}
+                      {selectorCuenta}
+                    </div>
                   )}
-                </div>
-              )
-            })()}
+                  {!dosFormas && paymentMethod === "transferencia" && selectorCuenta}
 
-            {/* Cuenta bancaria si transferencia (también con dos formas) */}
-            {(paymentMethod === "transferencia" || dosFormas) && (
-              <div className="space-y-1 md:space-y-1.5">
-                {/* En el teléfono sin título: el selector ya dice "Seleccionar cuenta". */}
-                <Label htmlFor="accountNumber" className="hidden text-xs font-bold md:block md:text-base">Numero de Cuenta</Label>
-                <Select value={accountNumber} onValueChange={setAccountNumber}>
-                  <SelectTrigger className="h-7 md:h-10 text-xs md:text-base">
-                    <SelectValue placeholder="Seleccionar cuenta..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="davivienda-123456789" className="text-xs font-bold md:text-base">Davivienda - 123456789</SelectItem>
-                    <SelectItem value="bancolombia-123456789" className="text-xs font-bold md:text-base">Bancolombia - 123456789</SelectItem>
-                    <SelectItem value="nequi-123456789" className="text-xs font-bold md:text-base">Nequi - 123456789</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+                  <div className="rp-checks-row">
+                    <div className="rp-checks">
+                      <label className="rp-check">
+                        <input
+                          id="partialPayment"
+                          type="checkbox"
+                          checked={isPartialPayment}
+                          onChange={(e) => handlePartialPaymentChange(e.target.checked)}
+                        />
+                        Pago manual
+                      </label>
+                      {/* RENOVAR: no en créditos americanos (tienen la
+                          prórroga). No se combina con "Cancelada". */}
+                      {!esAmericano && (
+                        <label className="rp-check rp-check--renovar">
+                          <input
+                            id="renovar"
+                            type="checkbox"
+                            checked={renovar}
+                            onChange={(e) => {
+                              setRenovar(e.target.checked)
+                              if (e.target.checked) setIsCancelada(false)
+                            }}
+                          />
+                          Renovar
+                        </label>
+                      )}
+                      {!renovar && (
+                        <label className="rp-check">
+                          <input
+                            id="cancelada"
+                            type="checkbox"
+                            checked={isCancelada}
+                            onChange={(e) => {
+                              setIsCancelada(e.target.checked)
+                              // Cancelar = cobrar todo lo que queda.
+                              if (e.target.checked) setPaymentAmount(saldo.toString())
+                            }}
+                          />
+                          Cancelada
+                        </label>
+                      )}
+                      {/* Prórroga: solo americanos en su ÚLTIMA cuota. */}
+                      {esAmericano && selectedClient.esUltimaCuotaPendiente && (
+                        <label className="rp-check">
+                          <input
+                            id="extenderCuotas"
+                            type="checkbox"
+                            checked={extenderCuotas}
+                            onChange={(e) => {
+                              const on = e.target.checked
+                              setExtenderCuotas(on)
+                              // Prorrogado, esta cuota deja de ser la final: se
+                              // cobran solo los intereses (`valorCuota`).
+                              if (on) {
+                                setPaymentAmount(selectedClient.valorCuota.toString())
+                                setIsCancelada(false)
+                                setIsPartialPayment(false)
+                              } else {
+                                setPaymentAmount("")
+                              }
+                            }}
+                          />
+                          Extender Cuotas (Prórroga)
+                        </label>
+                      )}
+                      {/* La multa se cobra junto con el pago. */}
+                      {selectedClient.multaPendiente && (
+                        <label className="rp-check rp-check--multa">
+                          <input
+                            id="pagarMulta"
+                            type="checkbox"
+                            checked={pagarMulta}
+                            onChange={(e) => setPagarMulta(e.target.checked)}
+                          />
+                          Pagar multa (${selectedClient.multaPendiente.valor.toLocaleString("es-CO")})
+                        </label>
+                      )}
+                      {/* Cuota adicional si aún debe: solo en la ÚLTIMA cuota,
+                          y no junto con la prórroga ni con la cancelación. */}
+                      {selectedClient.esUltimaCuotaPendiente && !extenderCuotas && !isCancelada && (
+                        <label className="rp-check rp-check--extra">
+                          <input
+                            id="agregarCuotaSiDebe"
+                            type="checkbox"
+                            checked={agregarCuotaSiDebe}
+                            onChange={(e) => setAgregarCuotaSiDebe(e.target.checked)}
+                          />
+                          Agregar cuota adicional si aún debe
+                        </label>
+                      )}
+                    </div>
+                    <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="rp-file" id="payment-photo" />
+                    <label
+                      htmlFor="payment-photo"
+                      aria-label="Adjuntar foto"
+                      className={`rp-cam${paymentPhoto ? " rp-cam--ok" : ""}`}
+                    >
+                      <Camera size={24} strokeWidth={1.75} />
+                    </label>
+                  </div>
 
-            {/* Checkboxes y Foto: en UNA fila, con la cámara al final. En
-                dos columnas cada casilla ocupaba su propio renglón. */}
-            <div className="flex items-center gap-2 md:gap-3">
-              <div className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-1">
-                <div className="flex items-center space-x-1.5">
-                  <Checkbox id="partialPayment" checked={isPartialPayment} onCheckedChange={(c) => handlePartialPaymentChange(c as boolean)} className="h-4 w-4 border-2 border-gray-400 dark:border-gray-500" />
-                  <Label htmlFor="partialPayment" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap">Pago manual</Label>
-                </div>
-                {/* RENOVAR: no en créditos americanos (tienen la prórroga). Al
-                    marcarlo se esconde "Cancelada": no se combinan. */}
-                {selectedClient.tipoAmortizacion?.toLowerCase().trim() !== "americano" && (
-                  <div className="flex items-center space-x-1.5">
-                    <Checkbox
-                      id="renovar"
-                      checked={renovar}
-                      onCheckedChange={(c) => {
-                        const on = c === true
-                        setRenovar(on)
-                        if (on) setIsCancelada(false)
-                      }}
-                      className="h-4 w-4 border-2 border-blue-500"
+                  {/* ── Los datos de la renovación ─────────────────────────
+                      Vista previa APROXIMADA: el cálculo exacto lo hace la
+                      base con el cronograma real (scripts/123). */}
+                  {renovar && (() => {
+                    const x = Number.parseFloat(valorRenovar) || 0
+                    const d = Number.parseInt(diasRenovar, 10) || 0
+                    const tasa = Number(selectedClient.tasaInteres) || 0
+                    const agregado = x * (1 + tasa / 100)
+                    const quedaban = Math.max(0, cuotasQueLeQuedan - numCuotas)
+                    const n = quedaban + d
+                    const saldoRenovado = nuevoSaldo + agregado
+                    return (
+                      <div className="rp-panel">
+                        <div className="rp-row2 rp-row2--tight">
+                          <label className="rp-field">
+                            <span className="rp-label">Valor a renovar</span>
+                            <span className="rp-wrap">
+                              <span className="rp-abs" style={{ left: 20 }}>$</span>
+                              <input
+                                id="valorRenovar"
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="Plata que recibe hoy"
+                                value={sinSigno(mostrarMonto(valorRenovar))}
+                                onChange={(e) => setValorRenovar(leerMonto(e.target.value))}
+                                className="rp-in rp-in--peso"
+                              />
+                            </span>
+                          </label>
+                          <label className="rp-field">
+                            <span className="rp-label">Días</span>
+                            <input
+                              id="diasRenovar"
+                              type="text"
+                              inputMode="numeric"
+                              placeholder="Días que se agregan"
+                              value={diasRenovar}
+                              onChange={(e) => setDiasRenovar(e.target.value.replace(/\D/g, ""))}
+                              className="rp-in"
+                            />
+                          </label>
+                        </div>
+                        {x > 0 && d > 0 && (
+                          <span className="rp-panel-sub" style={{ color: "#0f3a80", fontSize: 15 }}>
+                            Se entregan <b>${x.toLocaleString("es-CO")}</b>
+                            {tasa > 0 ? ` (+${tasa}%: $${Math.round(agregado).toLocaleString("es-CO")})` : ""}. Nuevo saldo aprox.{" "}
+                            <b>${Math.round(saldoRenovado).toLocaleString("es-CO")}</b> en {n} cuotas de ~$
+                            {Math.round(saldoRenovado / Math.max(1, n)).toLocaleString("es-CO")}.
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })()}
+
+                  {extenderCuotas && (
+                    <label className="rp-field">
+                      <span className="rp-label">Cantidad de cuotas a extender</span>
+                      <input
+                        id="cantidadCuotasExtender"
+                        type="text"
+                        inputMode="numeric"
+                        value={cantidadCuotasExtender}
+                        onChange={(e) => setCantidadCuotasExtender(e.target.value.replace(/\D/g, ""))}
+                        className="rp-in"
+                        placeholder="Ej: 3"
+                      />
+                    </label>
+                  )}
+
+                  {multa > 0 && (
+                    <div className="rp-aviso rp-aviso--rojo">
+                      <span>Total a cobrar (pago + multa)</span>
+                      <b>${(monto + multa).toLocaleString("es-CO")}</b>
+                    </div>
+                  )}
+
+                  {paymentPhoto && (
+                    <div className="rp-foto">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={paymentPhoto} alt="Comprobante de pago" />
+                      <button type="button" className="rp-foto-x" aria-label="Quitar foto" onClick={() => setPaymentPhoto(null)}>
+                        <X size={18} />
+                      </button>
+                    </div>
+                  )}
+
+                  <label className="rp-field" style={{ gap: 10 }}>
+                    <span className="rp-notas-label">Notas (Opcional)</span>
+                    <textarea
+                      id="notes"
+                      rows={2}
+                      value={notasPago}
+                      onChange={(e) => setNotasPago(e.target.value)}
+                      placeholder="Agregar comentarios sobre el pago..."
+                      className="rp-in"
                     />
-                    <Label htmlFor="renovar" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap text-blue-800">Renovar</Label>
+                  </label>
+
+                  {/* LA BARRA DE COBRAR NO SE ESCONDE DETRÁS DEL TECLADO (ver
+                      `subirBarra`). El desplazamiento se mide en px de la
+                      pantalla y la barra vive dentro del zoom: se divide. */}
+                  <div
+                    ref={barraCobrarRef}
+                    className="rp-actions"
+                    style={subirBarra > 0 ? { transform: `translateY(calc(-${subirBarra}px / var(--k)))` } : undefined}
+                  >
+                    <button type="button" className="rp-btn rp-btn--cancel" onClick={handleBack}>
+                      Cancelar
+                    </button>
+                    {/* El monto va EN el botón: es lo último que ve el cobrador
+                        antes de confirmar. Incluye la multa si va en el mismo
+                        movimiento. */}
+                    <button type="button" className="rp-btn rp-btn--cobrar" onClick={handleRegisterPayment} disabled={invalido}>
+                      {saving ? <Loader2 className="h-5 w-5 animate-spin" /> : null}
+                      {saving
+                        ? "Cobrando…"
+                        : (() => {
+                            const total = monto + multa
+                            if (total <= 0) return extenderCuotas ? "Registrar y extender plazo" : "Registrar pago"
+                            const cifra = `$${total.toLocaleString("es-CO")}`
+                            return extenderCuotas ? `Cobrar ${cifra} y extender` : `Cobrar ${cifra}`
+                          })()}
+                    </button>
                   </div>
-                )}
-                {!renovar && (
-                <div className="flex items-center space-x-1.5">
-                  <Checkbox
-                    id="cancelada"
-                    checked={isCancelada}
-                    onCheckedChange={(c) => {
-                      const checked = c as boolean
-                      setIsCancelada(checked)
-                      if (checked && selectedClient) {
-                  // Set payment amount to full remaining saldo
-                  const saldo = selectedClient.saldo
-                        setPaymentAmount(saldo.toString())
-                      }
-                    }}
-                    className="h-4 w-4 border-2 border-gray-400 dark:border-gray-500"
-                  />
-                  <Label htmlFor="cancelada" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap">Cancelada</Label>
-                </div>
-                )}
-                {/* Checkbox de extension de plazo: solo visible para
-                    prestamos tipo "americano" en su ULTIMA cuota. */}
-                {selectedClient &&
-                  selectedClient.tipoAmortizacion?.toLowerCase().trim() === "americano" &&
-                  selectedClient.esUltimaCuotaPendiente && (
-                    <div className="flex items-center space-x-1.5">
-                      <Checkbox
-                        id="extenderCuotas"
-                        checked={extenderCuotas}
-                        onCheckedChange={(c) => {
-                          const checked = c as boolean
-                          setExtenderCuotas(checked)
-                          // Cuando se prorroga el prestamo, esta cuota deja
-                          // de ser "la final" y pasa a ser un pago normal de
-                          // intereses. Por eso el monto sugerido cambia del
-                          // saldo TOTAL (intereses + capital) al simple
-                          // `valorCuota` del prestamo (solo intereses).
-                          if (checked && selectedClient) {
-                            setPaymentAmount(selectedClient.valorCuota.toString())
-                            // Tambien apagamos los flags de cancelada/parcial
-                            // por si estaban activos: extender es excluyente.
-                            setIsCancelada(false)
-                            setIsPartialPayment(false)
-                          } else if (!checked) {
-                            setPaymentAmount("")
-                          }
-                        }}
-                        className="h-4 w-4"
-                      />
-                      <Label
-                        htmlFor="extenderCuotas"
-                        className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap"
-                      >
-                        Extender Cuotas (Prórroga)
-                      </Label>
-                    </div>
-                  )}
-                {/* Checkbox "Pagar multa": solo visible si el cliente tiene
-                    una multa pendiente por mora. Al marcarse, la multa se
-                    cobra junto con el pago (se marca pagada + ingreso en
-                    los movimientos de la ruta). */}
-                {selectedClient?.multaPendiente && (
-                  <div className="flex items-center space-x-1.5">
-                    <Checkbox
-                      id="pagarMulta"
-                      checked={pagarMulta}
-                      onCheckedChange={(c) => setPagarMulta(c as boolean)}
-                      className="h-4 w-4 border-2 border-red-400"
-                    />
-                    <Label htmlFor="pagarMulta" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap text-red-700">
-                      Pagar multa (${selectedClient.multaPendiente.valor.toLocaleString("es-CO")})
-                    </Label>
-                  </div>
-                )}
-                {/* Checkbox "Agregar cuota adicional si el cliente aun debe":
-                    solo visible cuando la cuota actual es la ULTIMA del plan
-                    de pagos (cualquier tipo de amortizacion). Se excluye si
-                    ya se esta usando "Extender Cuotas" (americano) o si se
-                    va a cancelar el prestamo por completo, para no mezclar
-                    con esos flujos. */}
-                {selectedClient &&
-                  selectedClient.esUltimaCuotaPendiente &&
-                  !extenderCuotas &&
-                  !isCancelada && (
-                    <div className="flex items-center space-x-1.5">
-                      <Checkbox
-                        id="agregarCuotaSiDebe"
-                        checked={agregarCuotaSiDebe}
-                        onCheckedChange={(c) => setAgregarCuotaSiDebe(c as boolean)}
-                        className="h-4 w-4 border-2 border-amber-400"
-                      />
-                      <Label htmlFor="agregarCuotaSiDebe" className="text-[11px] md:text-sm font-bold cursor-pointer whitespace-nowrap text-amber-700">
-                        Agregar cuota adicional si aún debe (última cuota)
-                      </Label>
-                    </div>
-                  )}
-              </div>
-              <div className="flex shrink-0 justify-end">
-                <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="hidden" id="payment-photo" />
-                <Label htmlFor="payment-photo" className="cursor-pointer m-0">
-                  <Button type="button" size="icon" variant={paymentPhoto ? "default" : "outline"} className={`h-7 w-7 md:h-10 md:w-10 ${paymentPhoto ? "bg-green-600 hover:bg-green-700" : ""}`} asChild>
-                    <span><Camera className="h-3.5 w-3.5 md:h-5 md:w-5" /></span>
-                  </Button>
-                </Label>
+                </section>
               </div>
             </div>
-
-            {/* ── Los datos de la renovación ───────────────────────────────
-                Valor que se le entrega hoy y días que se agregan. Debajo, una
-                vista previa APROXIMADA: el cálculo exacto lo hace la base con
-                el cronograma real (scripts/123). */}
-            {renovar && (() => {
-              const x = Number.parseFloat(valorRenovar) || 0
-              const d = Number.parseInt(diasRenovar, 10) || 0
-              const tasa = Number(selectedClient.tasaInteres) || 0
-              const agregado = x * (1 + tasa / 100)
-              const saldoTrasPago = Math.max(0, selectedClient.saldo - (Number.parseFloat(paymentAmount) || 0))
-              const quedaban = Math.max(0, cuotasQueLeQuedan - numCuotas)
-              const n = quedaban + d
-              const nuevoSaldo = saldoTrasPago + agregado
-              return (
-                <div className="space-y-1 rounded-lg border border-blue-200 bg-blue-50/60 px-2 py-1.5">
-                  <div className="grid grid-cols-2 gap-2 md:gap-3">
-                    <div className="space-y-1">
-                      <Label htmlFor="valorRenovar" className="text-xs font-bold md:text-sm">Valor a renovar</Label>
-                      <Input
-                        id="valorRenovar"
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="Plata que recibe hoy"
-                        value={mostrarMonto(valorRenovar)}
-                        onChange={(e) => setValorRenovar(leerMonto(e.target.value))}
-                        className={`h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="diasRenovar" className="text-xs font-bold md:text-sm">Días</Label>
-                      <Input
-                        id="diasRenovar"
-                        type="text"
-                        inputMode="numeric"
-                        placeholder="Días que se agregan"
-                        value={diasRenovar}
-                        onChange={(e) => setDiasRenovar(e.target.value.replace(/\D/g, ""))}
-                        className={`h-7 md:h-10 text-xs md:text-sm font-bold ${CASILLA_ESCRIBIBLE}`}
-                      />
-                    </div>
-                  </div>
-                  {x > 0 && d > 0 && (
-                    <p className="text-[11px] md:text-sm text-blue-900">
-                      Se entregan <b>${x.toLocaleString("es-CO")}</b>
-                      {tasa > 0 ? ` (+${tasa}%: $${Math.round(agregado).toLocaleString("es-CO")})` : ""}. Nuevo saldo aprox.{" "}
-                      <b>${Math.round(nuevoSaldo).toLocaleString("es-CO")}</b> en {n} cuotas de ~$
-                      {Math.round(nuevoSaldo / Math.max(1, n)).toLocaleString("es-CO")}.
-                    </p>
-                  )}
-                </div>
-              )
-            })()}
-
-            {/* Total a cobrar cuando se paga tambien la multa */}
-            {pagarMulta && selectedClient?.multaPendiente && (
-              <p className="text-[11px] md:text-sm font-semibold text-red-700 bg-red-50 rounded-lg px-3 py-1.5">
-                Total a cobrar: ${((Number.parseFloat(paymentAmount) || 0) + selectedClient.multaPendiente.valor).toLocaleString("es-CO")} (pago + multa)
-              </p>
-            )}
-
-            {/* Input para cantidad de cuotas a extender. Solo aparece si el
-                checkbox "Extender Cuotas" esta activo. */}
-            {extenderCuotas && (
-              <div className="space-y-1.5 md:space-y-2">
-                <Label htmlFor="cantidadCuotasExtender" className="text-xs md:text-base">
-                  Cantidad de cuotas a extender
-                </Label>
-                <Input
-                  id="cantidadCuotasExtender"
-                  type="number"
-                  min="1"
-                  step="1"
-                  inputMode="numeric"
-                  value={cantidadCuotasExtender}
-                  onChange={(e) => setCantidadCuotasExtender(e.target.value)}
-                  className="h-8 md:h-10 text-xs md:text-sm"
-                  placeholder="Ej: 3"
-                />
-              </div>
-            )}
-
-            {paymentPhoto && (
-              <div className="space-y-1.5 md:space-y-2">
-                <Label className="text-xs md:text-sm">Foto Adjunta</Label>
-                <div className="relative rounded-lg border overflow-hidden">
-                  <img src={paymentPhoto} alt="Comprobante de pago" className="w-full h-auto max-h-[150px] md:max-h-[200px] object-contain" />
-                  <Button type="button" size="icon" variant="destructive" className="absolute top-1 right-1 md:top-2 md:right-2 h-6 w-6 md:h-8 md:w-8" onClick={() => setPaymentPhoto(null)}>
-                    <X className="h-3 w-3 md:h-4 md:w-4" />
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Las notas, en una línea en el teléfono: son opcionales y casi
-                nunca se usan, y la caja de tres renglones empujaba el botón
-                de cobrar fuera de la pantalla. El título va de pista adentro. */}
-            <div className="space-y-1.5 md:space-y-2">
-              <Label htmlFor="notes" className="hidden text-xs md:block md:text-base">Notas (Opcional)</Label>
-              <Textarea
-                id="notes"
-                rows={1}
-                placeholder="Notas (opcional)…"
-                className="h-8 min-h-8 resize-none py-1.5 text-xs md:h-auto md:min-h-[100px] md:resize-y md:text-sm"
-              />
-            </div>
-
-            {/* LA BARRA DE COBRAR NO SE ESCONDE DETRÁS DEL TECLADO.
-                Va pegada al fondo de la pantalla mientras se llena el
-                formulario, y cuando el teclado del teléfono se abre sube lo
-                que haga falta para quedar justo encima (ver `subirBarra`).
-                Antes quedaba al final del formulario y, con el teclado
-                abierto, había que cerrarlo para poder cobrar. */}
-            <div
-              ref={barraCobrarRef}
-              className="sticky bottom-0 z-20 -mx-3 flex gap-2 border-t bg-card px-3 pb-2 pt-2 md:static md:mx-0 md:gap-4 md:border-0 md:px-0 md:pb-0 md:pt-4"
-              style={subirBarra > 0 ? { transform: `translateY(-${subirBarra}px)` } : undefined}
-            >
-              <Button variant="outline" className="flex-1 h-8 md:h-10 text-xs md:text-base bg-transparent" onClick={handleBack}>
-                Cancelar
-              </Button>
-              {/* El monto va EN el boton: es lo ultimo que ve el cobrador
-                  antes de confirmar y evita cobrar una cifra distinta a la
-                  que acordo con el cliente. Incluye la multa si la va a
-                  cobrar en el mismo movimiento. */}
-              <Button className="flex-1 h-8 md:h-10 text-xs md:text-base bg-green-600 hover:bg-green-700 text-white" onClick={handleRegisterPayment} disabled={saving}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-                {(() => {
-                  const base = Number.parseFloat(paymentAmount) || 0
-                  const conMulta = base + (pagarMulta && selectedClient?.multaPendiente ? selectedClient.multaPendiente.valor : 0)
-                  if (conMulta <= 0) return extenderCuotas ? "Registrar y extender plazo" : "Registrar pago"
-                  const monto = `$${conMulta.toLocaleString("es-CO")}`
-                  return extenderCuotas ? `Cobrar ${monto} y extender` : `Cobrar ${monto}`
-                })()}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          )
+        })()
       )}
 
       {/* No Payment Dialog */}

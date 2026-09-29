@@ -17,6 +17,8 @@
 const CAMPOS_FOTO: Record<string, string> = {
   comprobante_url: "comprobantes",
   foto_local_url: "locales",
+  // La foto del pago (va en el evento del libro, `detalle.foto_url`).
+  foto_url: "pagos",
 }
 
 /** ¿Es una foto que todavía no subió (vive solo en el teléfono)? */

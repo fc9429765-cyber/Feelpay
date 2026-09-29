@@ -229,9 +229,21 @@ async function enviarItem(item: ItemCola): Promise<AtomicRpcResult> {
   // venta viaja con la URL real, nunca con la foto en `data:`. El payload ya
   // subido se guarda de inmediato: si lo que falla después es la venta, el
   // reintento no vuelve a subir las fotos.
-  if (item.tipo === "venta" || item.tipo === "revision") {
+  if (item.tipo === "venta" || item.tipo === "revision" || item.tipo === "gestion") {
     const { subirFotosPendientes } = await import("@/lib/foto-offline")
-    const r = await subirFotosPendientes(item.payload, item.identidad.ruta_id)
+    let r: { payload: Record<string, unknown>; cambio: boolean }
+    try {
+      r = await subirFotosPendientes(item.payload, item.identidad.ruta_id)
+    } catch (err) {
+      // Sin red: el item espera entero, con su foto.
+      if (esErrorDeRed(err) || item.tipo !== "gestion") throw err
+      // UN PAGO NO SE PIERDE POR SU FOTO. Si la subida falla por otra cosa
+      // (el almacenamiento rechazó el archivo), el evento sigue sin ella: la
+      // plata es lo que importa y la foto es respaldo.
+      console.error("[v0] La foto del pago no se pudo subir; el pago sigue sin ella:", err)
+      const { foto_url: _descartada, ...resto } = item.payload
+      r = { payload: resto, cambio: true }
+    }
     if (r.cambio) {
       item.payload = r.payload
       const db = await getDB()
