@@ -3327,7 +3327,7 @@ export function NewLoan({
                   disabled={loadingCuentas}
                 >
                   <option value="">{loadingCuentas ? "Cargando cuentas…" : cuentas.length ? "Seleccione una cuenta" : "No hay cuentas para esta ruta"}</option>
-                  {cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                  {cuentas.map((c) => <option key={c.id} value={c.id}>{(c as { etiqueta?: string }).etiqueta ?? c.nombre}</option>)}
                 </select>
                 <ChevronDown size={20} strokeWidth={1.75} className="cv-chevron" />
               </div>

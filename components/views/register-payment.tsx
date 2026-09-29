@@ -1586,7 +1586,8 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
       .then((r) => r.json())
       .then((data) => {
         if (cancelado || !Array.isArray(data)) return
-        const lista = data.map((c: { id: string | number; nombre: string }) => ({ id: String(c.id), nombre: c.nombre }))
+        // `etiqueta` = "Banco · número" (api/cuentas): el cobrador elige por el número.
+        const lista = data.map((c: { id: string | number; nombre: string; etiqueta?: string }) => ({ id: String(c.id), nombre: c.etiqueta ?? c.nombre }))
         setCuentasPago(lista)
         try { localStorage.setItem(clave, JSON.stringify(lista)) } catch { /* modo privado */ }
       })

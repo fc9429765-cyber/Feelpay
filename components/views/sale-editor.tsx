@@ -370,7 +370,8 @@ export function SaleEditor({ currentRutaId, loanIdInicial, onBack }: SaleEditorP
         console.error("[v0] SaleEditor usuarios error:", err)
       }
     })()
-    fetch(`/api/cuentas?ruta=${currentRutaId}`)
+    // `todas=1`: una venta vieja puede estar hecha a una cuenta ya desactivada.
+    fetch(`/api/cuentas?ruta=${currentRutaId}&todas=1`)
       .then((r) => r.json())
       .then((d) => {
         if (!cancelado) setCuentas(Array.isArray(d) ? d : [])
@@ -1778,7 +1779,7 @@ export function SaleEditor({ currentRutaId, loanIdInicial, onBack }: SaleEditorP
                           </SelectItem>
                         ) : (
                           cuentas.map((c) => (
-                            <SelectItem key={c.id} value={String(c.id)}>{c.nombre}</SelectItem>
+                            <SelectItem key={c.id} value={String(c.id)}>{(c as { etiqueta?: string }).etiqueta ?? c.nombre}</SelectItem>
                           ))
                         )}
                       </SelectContent>

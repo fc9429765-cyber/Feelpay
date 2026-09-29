@@ -20,6 +20,7 @@ import { MONEDAS, getMoneda, monedaPorPais } from "@/lib/monedas"
 import { ALL_MODULES, MODULE_GROUPS, getDefaultModulesForRole, isDefaultMobileNav } from "@/lib/modules-catalog"
 import { AMORTIZACIONES, mostrarMonto, leerMonto } from "@/lib/gestion-core"
 import { verPines } from "@/lib/pin-lock"
+import { CuentasRuta } from "@/components/cuentas-ruta"
 import { getUsuarioSesion, conceptosElegiblesAMano } from "@/lib/movimientos"
 import type { ModuleDefinition } from "@/lib/modules-catalog"
 
@@ -1226,6 +1227,21 @@ function RutasTab() {
                 ni hay tasa de cambio.
               </p>
             </div>
+
+            {/* ── Cuentas para transferencias (scripts/126) ─────────────────
+                Se guardan al momento, con su propio botón: ver
+                components/cuentas-ruta.tsx. Una ruta nueva todavía no tiene
+                id, así que primero se guarda la ruta. */}
+            {editing ? (
+              <CuentasRuta rutaId={editing.id} />
+            ) : (
+              <div className="space-y-1 border-t pt-3">
+                <Label className="text-sm">Cuentas para transferencias</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Guarda la ruta primero; después, al configurarla, podrás agregar sus cuentas.
+                </p>
+              </div>
+            )}
 
             {/* ── Métodos de interés ────────────────────────────────────── */}
             <div className="space-y-2 border-t pt-3">
