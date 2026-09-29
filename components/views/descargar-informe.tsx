@@ -4,7 +4,7 @@
  * Descargar informe.
  *
  * Genera el MISMO Excel que la empresa venía bajando del sistema anterior:
- * seis hojas (Pagos, No Pagos, Ventas, Gastos, Ingresos y Resumen) con las
+ * siete hojas (Pagos, No Pagos, Ventas, Gastos, Ingresos, Retiros y Resumen) con las
  * columnas letra por letra. Ver `lib/informe-excel.ts`, donde está el detalle
  * de cada hoja y de dónde sale cada dato.
  *
@@ -182,7 +182,7 @@ export function DescargarInforme() {
         description:
           total === 0
             ? "No hubo movimiento en ese rango con esos filtros."
-            : `${conteos.Pagos} pagos · ${conteos["No Pagos"]} no pagos · ${conteos.Ventas} ventas · ${conteos.Gastos} gastos · ${conteos.Ingresos} ingresos.`,
+            : `${conteos.Pagos} pagos · ${conteos["No Pagos"]} no pagos · ${conteos.Ventas} ventas · ${conteos.Gastos} gastos · ${conteos.Ingresos} ingresos · ${conteos.Retiros ?? 0} retiros.`,
       })
     } catch (err) {
       console.error("[v0] Descargar informe:", err)
@@ -203,10 +203,10 @@ export function DescargarInforme() {
           <div className="flex items-start gap-2">
             <FileSpreadsheet className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
             <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Genera el informe en Excel con las seis hojas de siempre:{" "}
+              Genera el informe en Excel con siete hojas:{" "}
               <strong>Pagos</strong>, <strong>No Pagos</strong>,{" "}
               <strong>Ventas</strong>, <strong>Gastos</strong>,{" "}
-              <strong>Ingresos</strong> y <strong>Resumen</strong>.
+              <strong>Ingresos</strong>, <strong>Retiros</strong> y <strong>Resumen</strong>.
             </p>
           </div>
 

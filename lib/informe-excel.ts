@@ -9,6 +9,7 @@
  *   Ventas     12 columnas · una fila por venta creada en el rango
  *   Gastos      5 columnas
  *   Ingresos    5 columnas
+ *   Retiros     5 columnas (las mismas de Gastos e Ingresos)
  *   Resumen     el encabezado con vendedores, fechas y los totales
  *
  * TODO VA COMO TEXTO, no como número. Es lo que hace el archivo original: la
@@ -127,7 +128,7 @@ export async function generarInformeExcel(
     return (q as { in: (c: string, v: number[]) => T }).in("ruta", rutaIds)
   }
 
-  const [resGes, resMov, resVentas, resRutas, resResumen] = await Promise.all([
+  const [resGes, resMov, resVentas, resRutas, resResumen, resAdmins] = await Promise.all([
     enRutas(
       sb
         .from("gestiones")
@@ -160,6 +161,10 @@ export async function generarInformeExcel(
         .gte("fecha_pago", desde)
         .lte("fecha_pago", hasta),
     ),
+    // Los administradores ASIGNADOS a cada ruta (Usuarios y Rutas). No se usa
+    // `rutas.idadmin`: está desactualizado —la 190 dice 1 y su administrador
+    // es CALEB—, y la asignación es lo que la empresa mantiene al día.
+    sb.from("usuario_rutas").select("ruta_id, usuarios!inner(nombre, rol, activo)").eq("usuarios.rol", "admin"),
   ])
 
   if (resGes.error) throw new Error(resGes.error.message)
@@ -171,14 +176,28 @@ export async function generarInformeExcel(
     }[]).map((r) => [r.id, r.nombre ?? String(r.id)]),
   )
 
+  const adminsPorRuta = new Map<number, string[]>()
+  for (const a of (resAdmins.data ?? []) as unknown as {
+    ruta_id: number
+    usuarios: { nombre: string | null; activo: boolean | null } | null
+  }[]) {
+    const nombre = a.usuarios?.nombre?.trim()
+    if (!nombre || a.usuarios?.activo === false) continue
+    const lista = adminsPorRuta.get(Number(a.ruta_id)) ?? []
+    if (!lista.includes(nombre)) lista.push(nombre)
+    adminsPorRuta.set(Number(a.ruta_id), lista)
+  }
+
   /**
-   * "UNID 190 - ESTEBAN", que es como el sistema viejo nombra al vendedor.
-   *
-   * Acá se usa el nombre de la ruta tal como está guardado: es lo único que
-   * tenemos y lo que la secretaría reconoce. Si la ruta no existe, queda el
-   * número, que es mejor que una celda vacía.
+   * "UNID 190 - CALEB": el número de la unidad y su administrador, como lo
+   * pidió la empresa. El número es el id de la ruta (en esta base el id ES la
+   * unidad); el nombre, el administrador asignado (si son varios, "A / B").
+   * Sin administrador asignado queda solo "UNID 190": mejor que inventarlo.
    */
-  const vendedor = (rutaId: number): string => rutas.get(rutaId) ?? `UNID ${rutaId}`
+  const vendedor = (rutaId: number): string => {
+    const admins = adminsPorRuta.get(rutaId)
+    return admins?.length ? `UNID ${rutaId} - ${admins.join(" / ")}` : `UNID ${rutaId}`
+  }
 
   // ── Los créditos que aparecen, con su cliente y su ficha ─────────────────
   const gestiones = (resGes.data ?? []) as unknown as Gestion[]
@@ -351,6 +370,7 @@ export async function generarInformeExcel(
   const gastos = movs.filter((m) => cuenta(m) && m.tipo === "Gasto").map(filaMov)
   const ingresos = movs.filter((m) => cuenta(m) && m.tipo === "Ingreso").map(filaMov)
   const retiros = movs.filter((m) => cuenta(m) && m.tipo === "Retiro")
+  const filasRetiros = retiros.map(filaMov)
 
   // ── Resumen ──────────────────────────────────────────────────────────────
   const res = (resResumen.data ?? []) as unknown as Record<string, unknown>[]
@@ -407,6 +427,7 @@ export async function generarInformeExcel(
   agregar("Ventas", CAB_VENTAS, ventas)
   agregar("Gastos", CAB_MOV, gastos)
   agregar("Ingresos", CAB_MOV, ingresos)
+  agregar("Retiros", CAB_MOV, filasRetiros)
   agregar("Resumen", null, resumen)
 
   const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" })
@@ -430,6 +451,7 @@ export async function generarInformeExcel(
       Ventas: ventas.length,
       Gastos: gastos.length,
       Ingresos: ingresos.length,
+      Retiros: filasRetiros.length,
     },
   }
 }
