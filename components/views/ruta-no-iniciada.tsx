@@ -16,6 +16,8 @@ import { AlertCircle, Loader2, Play, MessageSquare } from "lucide-react"
 import { getSupabaseSafe } from "@/lib/api-helper"
 import { useToast } from "@/hooks/use-toast"
 import { todayColombia } from "@/lib/colombia-date"
+import { encolar } from "@/lib/offline-queue"
+import { esErrorDeRed } from "@/lib/credenciales-offline"
 
 export type EstadoRuta = "abierta" | "cerrada" | null
 
@@ -47,17 +49,31 @@ export function RutaNoIniciada({
   const iniciarRuta = async () => {
     if (iniciando) return
 
-    // Abrir la jornada SÍ necesita servidor: es la fila que después consultan
-    // el cierre de caja y el monitoreo del admin, y encolarla dejaría a dos
-    // dispositivos creyendo cada uno que abrió la ruta. Lo que sí funciona sin
-    // señal es SEGUIR trabajando una ruta ya abierta.
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      toast({
-        title: "Sin conexión",
-        description:
-          "Para iniciar la ruta necesitas señal. Si ya la habías iniciado hoy, vuelve a abrir la app con señal una vez y podrás seguir trabajando sin conexión.",
-        variant: "destructive",
+    // SIN SEÑAL LA RUTA SE ABRE IGUAL. Antes esto pedía conexión y un
+    // cobrador que arrancaba el día en una zona sin cobertura no podía cobrar
+    // nada. Ahora la apertura entra a la cola —primera de todas, porque se
+    // captura antes que cualquier cobro— y se sube al volver la señal. Es
+    // idempotente: si otro teléfono ya la había abierto, no se duplica.
+    const abrirSinSenal = async () => {
+      await encolar({
+        tipo: "iniciar_ruta",
+        payload: { fecha: todayColombia() },
+        descripcion: "Inicio de ruta",
+        id: crypto.randomUUID(),
       })
+      onEstadoChange?.("abierta")
+      toast({
+        title: "Ruta iniciada sin señal",
+        description: "Ya puedes trabajar. El inicio se sube solo cuando vuelva la conexión.",
+      })
+    }
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      try {
+        setIniciando(true)
+        await abrirSinSenal()
+      } finally {
+        setIniciando(false)
+      }
       return
     }
 
@@ -76,6 +92,12 @@ export function RutaNoIniciada({
 
       if (errorSelect) {
         console.error("[v0] Error consultando rutas_diarias:", errorSelect.message)
+        // "Tengo red" pero no contesta: supabase DEVUELVE el error, no lo
+        // lanza, así que el catch de abajo nunca se enteraba.
+        if (esErrorDeRed(errorSelect)) {
+          await abrirSinSenal()
+          return
+        }
       }
 
       if (existente) {
@@ -129,6 +151,10 @@ export function RutaNoIniciada({
         }
 
         console.error("[v0] Error iniciando ruta:", error.message)
+        if (esErrorDeRed(error)) {
+          await abrirSinSenal()
+          return
+        }
         toast({ title: "No se pudo iniciar la ruta", description: error.message, variant: "destructive" })
         return
       }
@@ -139,6 +165,8 @@ export function RutaNoIniciada({
       }
     } catch (err) {
       console.error("[v0] Unexpected error iniciando ruta:", err)
+      // La red se cayó a mitad de camino: se abre sin señal.
+      if (esErrorDeRed(err)) await abrirSinSenal()
     } finally {
       setIniciando(false)
     }

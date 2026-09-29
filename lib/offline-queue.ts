@@ -52,6 +52,10 @@ const STORE = "cola"
 //              `registrar_pago_atomico` (script 044).
 // "revision" = una fila para solicitudes_revision (un movimiento que supero
 //              el umbral de su ruta y necesita el visto bueno de secretaria).
+// "iniciar_ruta" = abrir la jornada (fila de rutas_diarias) SIN SEÑAL. Va
+//              primero en la cola por construccion —se captura antes que
+//              cualquier cobro del dia— y es idempotente: si al llegar ya hay
+//              fila para ese dia (otro telefono la abrio), no hace nada.
 /**
  * EL DÍA AL QUE PERTENECE UNA VENTA QUE ESTUVO EN LA COLA.
  *
@@ -90,7 +94,7 @@ function diaDeLaVentaEncolada(
 }
 
 export type TipoOperacion =
-  | "gestion" | "rpc" | "pago" | "no_pago" | "transaccion" | "venta" | "revision"
+  | "gestion" | "rpc" | "pago" | "no_pago" | "transaccion" | "venta" | "revision" | "iniciar_ruta"
 
 export type EstadoItem = "pendiente" | "enviando" | "fallido"
 
@@ -221,6 +225,20 @@ export async function reintentar(id: string): Promise<void> {
 async function enviarItem(item: ItemCola): Promise<AtomicRpcResult> {
   const supabase = createClient()
 
+  // LAS FOTOS TOMADAS SIN SEÑAL SUBEN PRIMERO (ver lib/foto-offline.ts). La
+  // venta viaja con la URL real, nunca con la foto en `data:`. El payload ya
+  // subido se guarda de inmediato: si lo que falla después es la venta, el
+  // reintento no vuelve a subir las fotos.
+  if (item.tipo === "venta" || item.tipo === "revision") {
+    const { subirFotosPendientes } = await import("@/lib/foto-offline")
+    const r = await subirFotosPendientes(item.payload, item.identidad.ruta_id)
+    if (r.cambio) {
+      item.payload = r.payload
+      const db = await getDB()
+      if (await db.get(STORE, item.id)) await db.put(STORE, item)
+    }
+  }
+
   if (item.tipo === "gestion") {
     // El `id` del item ES el id del evento en el libro. La tabla `gestiones`
     // lo tiene como llave primaria, asi que un reenvio no puede duplicar la
@@ -318,9 +336,36 @@ async function enviarItem(item: ItemCola): Promise<AtomicRpcResult> {
       solicitado_por: item.identidad.user_id,
       created_at: item.capturadoEn,
     })
+    // `enviado_a_revision` para que el drenado AVISE a quien aprueba: una
+    // solicitud que llega horas después, desde la cola, no tiene formulario
+    // abierto que mande el aviso.
     if (error) {
       // 23505 = ya se habia insertado en un intento anterior.
       if ((error as { code?: string }).code === "23505") return { ok: true } as AtomicRpcResult
+      throw error
+    }
+    return { ok: true, enviado_a_revision: true } as AtomicRpcResult
+  }
+
+  if (item.tipo === "iniciar_ruta") {
+    const fecha = String((item.payload as { fecha?: string }).fecha ?? tsToColombiaDate(item.capturadoEn))
+    const rutaId = item.identidad.ruta_id
+    const { data: existente, error: errSel } = await supabase
+      .from("rutas_diarias").select("id").eq("ruta_id", rutaId).eq("fecha", fecha).maybeSingle()
+    if (errSel) throw errSel
+    // Ya estaba (abierta o cerrada): lo que diga el servidor manda.
+    if (existente) return { ok: true } as AtomicRpcResult
+    const { error } = await supabase
+      .from("rutas_diarias")
+      .insert({ ruta_id: rutaId, fecha, estado: "abierta", hora_inicio: item.capturadoEn })
+    if (error) {
+      if ((error as { code?: string }).code === "23505") return { ok: true } as AtomicRpcResult
+      // Una base sin la columna hora_inicio: se abre igual sin ella.
+      if (/hora_inicio/.test(error.message)) {
+        const r = await supabase.from("rutas_diarias").insert({ ruta_id: rutaId, fecha, estado: "abierta" })
+        if (r.error && (r.error as { code?: string }).code !== "23505") throw r.error
+        return { ok: true } as AtomicRpcResult
+      }
       throw error
     }
     return { ok: true } as AtomicRpcResult
@@ -358,9 +403,32 @@ async function enviarItem(item: ItemCola): Promise<AtomicRpcResult> {
   throw new Error(`Tipo de operacion no soportado en la cola: ${item.tipo}`)
 }
 
+/**
+ * ¿Este teléfono abrió la jornada de esa ruta y ese día SIN SEÑAL y todavía no
+ * la subió? Mientras sea así, que el servidor diga "no hay fila" no significa
+ * que la ruta no se inició: significa que la cola todavía no llegó.
+ */
+export async function hayInicioDeRutaPendiente(rutaId: number, fecha: string): Promise<boolean> {
+  try {
+    const items = await listarCola()
+    return items.some(
+      (i) =>
+        i.tipo === "iniciar_ruta" &&
+        i.identidad.ruta_id === rutaId &&
+        (i.payload as { fecha?: string }).fecha === fecha,
+    )
+  } catch {
+    return false
+  }
+}
+
 function esErrorDeRed(err: unknown): boolean {
   if (err instanceof NetworkUnavailableError) return true
-  const msg = err instanceof Error ? err.message : String(err)
+  // Los errores de supabase-js pueden llegar como objeto plano con `message`
+  // ("TypeError: Failed to fetch"), no como Error: sin leerlo, un corte de red
+  // contaba como error de negocio y el item terminaba "fallido".
+  const msg =
+    err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? err)
   return (
     msg.includes("NetworkError") ||
     msg.includes("Failed to fetch") ||

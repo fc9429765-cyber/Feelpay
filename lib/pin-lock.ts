@@ -37,6 +37,7 @@
  */
 
 import { createClient } from "@/lib/supabase/client"
+import { esErrorDeRed, guardarPinOffline, sinSenal, verificarPinSinSenal } from "@/lib/credenciales-offline"
 
 /**
  * Los roles a los que se les pide el PIN.
@@ -123,11 +124,32 @@ export interface ResultadoPin {
  * tiene permiso de leer esa columna (script 073, paso 5).
  */
 export async function verificarPin(userId: number | string, pin: string): Promise<ResultadoPin> {
-  const { data, error } = await createClient().rpc("verificar_pin", {
-    p_user_id: Number(userId),
-    p_pin: pin,
-  })
+  // SIN SEÑAL: se compara contra la huella del último desbloqueo con señal
+  // (lib/credenciales-offline.ts). Si no hay huella, no se abre: se avisa.
+  const sinRed = async (): Promise<ResultadoPin> => {
+    const r = await verificarPinSinSenal(userId, pin)
+    if (!r) {
+      throw new Error("Sin señal y este teléfono todavía no tiene tu PIN guardado. Usa \"Salir\" y entra con tu usuario y contraseña.")
+    }
+    return r
+  }
+  if (sinSenal()) return sinRed()
 
+  let data: unknown = null
+  let error: { message: string } | null = null
+  try {
+    const r = await createClient().rpc("verificar_pin", {
+      p_user_id: Number(userId),
+      p_pin: pin,
+    })
+    data = r.data
+    error = r.error
+  } catch (err) {
+    if (esErrorDeRed(err)) return sinRed()
+    throw err
+  }
+
+  if (error && esErrorDeRed(error)) return sinRed()
   if (error) {
     console.error("[v0] verificar_pin error:", error.message)
     // Ante un error de red NO se abre el candado. Se avisa y se deja
@@ -137,6 +159,8 @@ export async function verificarPin(userId: number | string, pin: string): Promis
   }
 
   const r = (data ?? {}) as { ok?: boolean; bloqueado?: boolean; restantes?: number }
+  // Desbloqueó con señal: se guarda la huella para la próxima sin señal.
+  if (r.ok) void guardarPinOffline(userId, pin)
   return {
     ok: !!r.ok,
     bloqueado: !!r.bloqueado,

@@ -64,6 +64,7 @@ import {
   inactividadPin,
 } from "@/lib/pin-lock"
 import { SESSION_LOST_EVENT, getSupabaseSafe } from "@/lib/api-helper"
+import { guardarRutasOffline, leerRutasOffline } from "@/lib/credenciales-offline"
 import { limpiarCache } from "@/lib/offline-cache"
 import { createClient } from "@/lib/supabase/client"
 import { ALL_MODULES, isDefaultMobileNav, type PermissionsMap } from "@/lib/modules-catalog"
@@ -72,11 +73,22 @@ import { useToast } from "@/hooks/use-toast"
 import { Loader2, ShieldAlert, RefreshCw } from "lucide-react"
 
 async function loadUserPermissions(userId: number, rol: string): Promise<PermissionsMap | null> {
+  const k = `permisosOffline:${userId}`
   try {
-    const { data } = await createClient()
+    const { data, error } = await createClient()
       .from("user_permissions")
       .select("view_id, enabled, in_mobile_nav")
       .eq("user_id", userId)
+    // SIN SEÑAL: los permisos de la última vez que se leyeron. Sin esto el
+    // menú caía a los de su rol y a alguien con permisos personalizados le
+    // aparecían o desaparecían módulos al perder la señal.
+    if (error) {
+      try {
+        const raw = localStorage.getItem(k)
+        if (raw) return JSON.parse(raw) as PermissionsMap
+      } catch { /* sin cache */ }
+      return null
+    }
     // Sin filas: el usuario nunca tuvo permisos personalizados -> null le
     // indica al sidebar/mobile-nav que use los defaults de rol tal cual.
     if (!data || data.length === 0) return null
@@ -101,6 +113,7 @@ async function loadUserPermissions(userId: number, rol: string): Promise<Permiss
         map[m.viewId] = { enabled: isDefault, inMobileNav: isDefault && isDefaultMobileNav(m, rol) }
       }
     }
+    try { localStorage.setItem(`permisosOffline:${userId}`, JSON.stringify(map)) } catch { /* modo privado */ }
     return map
   } catch {
     return null
@@ -229,9 +242,12 @@ export default function Page() {
           limpiarDiaDeSesion()
           setAvisoSesion(mensajeDeCaducidad(motivo))
           setSessionPhase("idle")
-          // El cache de LECTURA se va; la cola de escrituras pendientes vive
-          // en otra base y no se toca.
-          void limpiarCache()
+          // El cache de LECTURA se va si cambió el DÍA (son datos de ayer).
+          // Si solo fue inactividad, se CONSERVA: sin señal es lo único con lo
+          // que el cobrador puede seguir trabajando después de volver a entrar
+          // (lib/credenciales-offline.ts). La cola de escrituras vive en otra
+          // base y nunca se toca.
+          if (motivo === "dia") void limpiarCache()
           return
         }
 
@@ -593,6 +609,20 @@ export default function Page() {
         return
       }
 
+      // "NO HAY FILA" PERO ESTE TELÉFONO LA ABRIÓ SIN SEÑAL y la cola todavía
+      // no la subió (al volver la red, esta consulta y el drenado corren a la
+      // vez). Sin esto, el cobrador veía "Ruta no iniciada" justo al recuperar
+      // señal y se le borraba el estado guardado.
+      if (result === null) {
+        const { hayInicioDeRutaPendiente, drenarCola } = await import("@/lib/offline-queue")
+        if (await hayInicioDeRutaPendiente(selectedRuta.id, fechaHoy)) {
+          if (cancelled) return
+          aplicar("abierta")
+          void drenarCola()
+          return
+        }
+      }
+
       aplicar(result)
     }
     fetchRutaActiva()
@@ -669,6 +699,11 @@ export default function Page() {
           .map((row) => row.rutas)
           .filter(Boolean)
           .sort((a: SelectedRuta, b: SelectedRuta) => a.id - b.id)
+        // Para poder elegir la ruta la próxima vez que se entre SIN señal.
+        guardarRutasOffline(user.id, rutasData)
+      } else {
+        // Sin señal: las rutas de la última entrada con señal.
+        rutasData = leerRutasOffline<SelectedRuta>(user.id)
       }
 
       const rolLower = (user.rol ?? "").toLowerCase()
@@ -766,7 +801,7 @@ export default function Page() {
     }
   }, [currentUser, bloqueado])
 
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback((opts?: { conservarCache?: boolean }) => {
     try {
       localStorage.removeItem(USER_STORAGE_KEY)
       localStorage.removeItem(RUTA_STORAGE_KEY)
@@ -784,8 +819,10 @@ export default function Page() {
     myConvIdsRef.current = new Set()
     myCarpetaIdsRef.current = new Set()
     // Datos cacheados para trabajar sin señal: se borran para que el
-    // siguiente usuario no vea la ruta del anterior.
-    void limpiarCache()
+    // siguiente usuario no vea la ruta del anterior. Salvo cuando la sesión
+    // venció por inactividad: es la misma persona volviendo, y sin señal ese
+    // cache es con lo único que puede seguir trabajando.
+    if (!opts?.conservarCache) void limpiarCache()
   }, [])
 
   /**
@@ -813,7 +850,8 @@ export default function Page() {
       const motivo = motivoDeCaducidad(true)
       if (!motivo) return
       setAvisoSesion(mensajeDeCaducidad(motivo))
-      handleLogout()
+      // Por inactividad se conserva el cache de lectura (ver arriba).
+      handleLogout({ conservarCache: motivo === "inactividad" })
     }
 
     /**
@@ -1580,7 +1618,7 @@ export default function Page() {
           <Button variant="outline" onClick={handleChangeRuta}>
             Cambiar de ruta
           </Button>
-          <Button variant="ghost" onClick={handleLogout}>
+          <Button variant="ghost" onClick={() => handleLogout()}>
             Cerrar sesion
           </Button>
         </div>
@@ -1674,7 +1712,9 @@ export default function Page() {
           <PinLockView
             user={currentUser}
             onDesbloqueado={() => setBloqueado(false)}
-            onSalir={handleLogout}
+            // Salir del PIN es la misma persona yendo al login: sin señal
+            // necesita el cache para seguir trabajando al volver a entrar.
+            onSalir={() => handleLogout({ conservarCache: true })}
           />
         </div>
       )}

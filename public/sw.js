@@ -1,14 +1,58 @@
 // Service Worker — Feelpay: Web Push + caché para trabajar sin señal
 
 // Nombre versionado: al cambiarlo se descarta el caché viejo en `activate`.
-const CACHE = "feelpay-app-v1";
+const CACHE = "feelpay-app-v2";
 
 // Tomar control inmediatamente al instalarse o actualizarse.
 // Sin esto, cuando sw.js cambia el SW viejo sigue activo hasta que
 // el usuario cierre todas las pestañas — el nuevo queda en "waiting"
 // y el browser NO lo despierta para push en segundo plano.
+// AL INSTALARSE YA SE GUARDA LA APP. Antes no se guardaba nada hasta la
+// SEGUNDA carga con señal: en la primera, el HTML y los scripts bajaban antes
+// de que el SW tomara control. Ahora se guarda el documento al instalar, y la
+// página le manda la lista de lo que ya bajó (mensaje "precache", ver
+// components/sw-register.tsx) para que quede todo desde la primera visita.
+const BASICOS = ["/", "/manifest.json", "/opad-logo.png"];
+
+async function guardarSiOk(cache, url) {
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (res && res.ok) await cache.put(url, res.clone());
+  } catch {
+    /* sin señal: se guardará la próxima vez */
+  }
+}
+
 self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE);
+      await Promise.all(BASICOS.map((u) => guardarSiOk(cache, u)));
+      await self.skipWaiting();
+    })()
+  );
+});
+
+// La página avisa qué archivos de la app ya descargó: se guardan los que falten.
+self.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.tipo !== "precache" || !Array.isArray(data.urls)) return;
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE);
+      for (const raw of data.urls) {
+        try {
+          const url = new URL(raw, self.location.origin);
+          if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) continue;
+          const clave = url.pathname === "/" ? "/" : url.href;
+          if (await cache.match(clave)) continue;
+          await guardarSiOk(cache, clave);
+        } catch {
+          /* url inválida: se ignora */
+        }
+      }
+    })()
+  );
 });
 
 self.addEventListener("activate", (event) => {
@@ -56,13 +100,24 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) return;
 
   // Navegación: intentar red y caer al documento cacheado si no hay señal.
+  //
+  // CON SEÑAL DÉBIL NO SE ESPERA PARA SIEMPRE. En la calle lo común no es "sin
+  // red" sino una red que no responde: el navegador se quedaba colgado
+  // esperando y la app no abría. Si en 6 segundos no contesta, se sirve lo
+  // guardado. Y solo se guarda una respuesta BUENA: antes se guardaba también
+  // una página de error y quedaba como la app "sin señal".
   if (esNavegacion(request)) {
     event.respondWith(
       (async () => {
         try {
-          const red = await fetch(request);
-          const cache = await caches.open(CACHE);
-          cache.put("/", red.clone());
+          const red = await Promise.race([
+            fetch(request),
+            new Promise((_, rechazar) => setTimeout(() => rechazar(new Error("lento")), 6000)),
+          ]);
+          if (red && red.ok) {
+            const cache = await caches.open(CACHE);
+            cache.put("/", red.clone());
+          }
           return red;
         } catch {
           const cache = await caches.open(CACHE);

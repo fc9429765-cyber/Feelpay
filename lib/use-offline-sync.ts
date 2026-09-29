@@ -8,7 +8,7 @@
  * Se monta UNA sola vez (en el indicador del header). Dispara el drenado:
  *   - al recuperar la conexion (`online`)
  *   - al abrir la app, si quedaron pendientes de una sesion anterior
- *   - cada 60s mientras la app este abierta y haya pendientes
+ *   - cada 30s mientras la app este abierta, y al volver a la app
  *
  * `navigator.onLine` solo dice si hay interfaz de red, no si internet responde
  * de verdad. Por eso el drenado tambien se dispara periodicamente: si el
@@ -80,13 +80,23 @@ export function useOfflineSync() {
     return suscribirCola(() => void refrescarConteo())
   }, [refrescarConteo])
 
-  // Drenado al abrir la app y cada 60s si quedan pendientes
+  // Drenado al abrir la app, cada 30s si quedan pendientes, y al VOLVER a la
+  // app (desbloquear el teléfono, cambiar de aplicación). En la calle la señal
+  // casi nunca "vuelve" con un evento `online`: el teléfono dice que tiene red
+  // todo el tiempo y lo que cambia es si responde.
   useEffect(() => {
     void sincronizar()
     const t = setInterval(() => {
       if (typeof navigator !== "undefined" && navigator.onLine) void sincronizar()
-    }, 60_000)
-    return () => clearInterval(t)
+    }, 30_000)
+    const alVolver = () => {
+      if (document.visibilityState === "visible") void sincronizar()
+    }
+    document.addEventListener("visibilitychange", alVolver)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener("visibilitychange", alVolver)
+    }
   }, [sincronizar])
 
   return {

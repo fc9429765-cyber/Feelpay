@@ -34,6 +34,8 @@ import { useToast } from "@/hooks/use-toast"
 import { getRutaUmbrales, excedeUmbral, MENSAJE_REVISION, getSolicitanteNombre } from "@/lib/ruta-umbrales"
 import { avisarSolicitudPendiente } from "@/lib/avisos-revision"
 import { enviarOEncolar } from "@/lib/offline-queue"
+import { fotoParaCola, esFotoPendiente } from "@/lib/foto-offline"
+import { esErrorDeRed } from "@/lib/credenciales-offline"
 import { obtenerUbicacion } from "@/lib/geo"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -545,7 +547,18 @@ export function NewLoan({
     }
 
     setSubiendoComprobante(true)
+    // SIN SEÑAL LA FOTO SE GUARDA EN EL TELÉFONO y sube con la venta cuando
+    // vuelva la red (lib/foto-offline.ts). Sin esto ninguna venta se podía
+    // hacer sin señal: la evidencia es obligatoria y nunca terminaba de subir.
+    const guardarSinSenal = async () => {
+      setComprobanteUrl(await fotoParaCola(file))
+      toast({ title: "Foto guardada sin señal", description: "Se sube sola con la venta cuando vuelva la conexión." })
+    }
     try {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await guardarSinSenal()
+        return
+      }
       const fd = new FormData()
       fd.append("file", file)
       fd.append("folder", `comprobantes/${currentRutaId}`)
@@ -556,6 +569,14 @@ export function NewLoan({
       toast({ title: "Comprobante cargado", description: "Queda guardado con la venta." })
     } catch (err) {
       console.error("[v0] Error subiendo el comprobante:", err)
+      if (esErrorDeRed(err)) {
+        try {
+          await guardarSinSenal()
+          return
+        } catch (e2) {
+          err = e2
+        }
+      }
       toast({
         title: "No se pudo subir",
         description: err instanceof Error ? err.message : "Intenta de nuevo",
@@ -577,6 +598,11 @@ export function NewLoan({
     }
     setSubiendoFotoLocal(true)
     try {
+      // Sin señal se guarda en el teléfono, como la evidencia.
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setFotoLocalUrl(await fotoParaCola(file))
+        return
+      }
       const fd = new FormData()
       fd.append("file", file)
       fd.append("folder", `locales/${currentRutaId}`)
@@ -586,6 +612,12 @@ export function NewLoan({
       setFotoLocalUrl(json.url)
     } catch (err) {
       console.error("[v0] Error subiendo la foto del local:", err)
+      if (esErrorDeRed(err)) {
+        try {
+          setFotoLocalUrl(await fotoParaCola(file))
+          return
+        } catch { /* se avisa abajo */ }
+      }
       toast({
         title: "No se pudo subir la foto del local",
         description: err instanceof Error ? err.message : "Intenta de nuevo",
@@ -2047,31 +2079,46 @@ export function NewLoan({
         const confirmado = await confirmRevision()
         if (!confirmado) return
 
-        const { error: insertError } = await createClient().from("solicitudes_revision").insert({
-          tipo: "venta",
-          subtipo: esRenovacion ? "renovacion" : "nueva",
-          ruta_id: p_ruta_id,
-          solicitado_por: p_user_id,
-          solicitado_por_nombre: getSolicitanteNombre(),
-          monto: valorNum,
-          descripcion: `${esRenovacion ? "Renovación" : "Venta nueva"} — ${nombreParaEtiqueta}`,
-          payload: { p_cliente, p_loan, p_payment_plan },
-        })
-
-        if (insertError) {
-          toast({ title: "Error", description: insertError.message, variant: "destructive" })
+        // POR LA COLA, como todo lo demás: sin señal la solicitud queda en el
+        // teléfono y se manda sola al volver la red (con sus fotos, que suben
+        // primero). Antes era un INSERT directo que sin señal fallaba y la
+        // venta se perdía con el formulario.
+        let revisionEncolada = false
+        try {
+          const r = await enviarOEncolar({
+            tipo: "revision",
+            descripcion: `${esRenovacion ? "Renovación" : "Venta nueva"} a revisión — ${nombreParaEtiqueta} ($${valorNum.toLocaleString()})`,
+            payload: {
+              tipo: "venta",
+              subtipo: esRenovacion ? "renovacion" : "nueva",
+              solicitado_por_nombre: getSolicitanteNombre(),
+              monto: valorNum,
+              descripcion: `${esRenovacion ? "Renovación" : "Venta nueva"} — ${nombreParaEtiqueta}`,
+              payload: { p_cliente, p_loan, p_payment_plan },
+            },
+            rutaId: p_ruta_id,
+          })
+          revisionEncolada = r.encolado
+        } catch (err) {
+          toast({ title: "Error", description: mensajeDeError(err), variant: "destructive" })
           return
         }
 
-        void avisarSolicitudPendiente({
-          etiqueta: esRenovacion ? "Renovación" : "Venta",
-          monto: valorNum,
-          cliente: nombreParaEtiqueta,
-          rutaId: p_ruta_id,
-        })
+        // Encolada, el aviso lo manda la cola al subirla.
+        if (!revisionEncolada) {
+          void avisarSolicitudPendiente({
+            etiqueta: esRenovacion ? "Renovación" : "Venta",
+            monto: valorNum,
+            cliente: nombreParaEtiqueta,
+            rutaId: p_ruta_id,
+          })
+        }
 
-        showToastPill(MENSAJE_REVISION)
-        setSuccessDialog({ open: true, msg: MENSAJE_REVISION })
+        const msgRevision = revisionEncolada
+          ? "Guardada sin señal. Se enviará a revisión de secretaría al volver la conexión."
+          : MENSAJE_REVISION
+        showToastPill(msgRevision)
+        setSuccessDialog({ open: true, msg: msgRevision })
         setSuccessAlert(MENSAJE_REVISION)
         setFormAlert(null)
         setTimeout(() => setSuccessAlert(null), 6000)
@@ -3186,7 +3233,7 @@ export function NewLoan({
                   {subiendoFotoLocal
                     ? <><Loader2 size={32} className="animate-spin" color="#1f6fe0" />Subiendo…</>
                     : fotoLocalUrl
-                      ? <span className="cv-photo-tag">Cargada ✓</span>
+                      ? <span className="cv-photo-tag">{esFotoPendiente(fotoLocalUrl) ? "Guardada sin señal" : "Cargada ✓"}</span>
                       : <><Camera size={40} fill="#1f6fe0" color="#fff" strokeWidth={1.6} />Foto del local</>}
                 </label>
               </div>
@@ -3584,7 +3631,9 @@ export function NewLoan({
                 {subiendoComprobante
                   ? "Subiendo…"
                   : comprobanteUrl
-                    ? "Foto cargada · toca para reemplazar"
+                    ? esFotoPendiente(comprobanteUrl)
+                      ? "Guardada sin señal · sube con la venta"
+                      : "Foto cargada · toca para reemplazar"
                     : "Subir foto de la entrega del dinero"}
               </span>
               <span className="cv-evid-sub">En efectivo: foto entregando el dinero al cliente.</span>

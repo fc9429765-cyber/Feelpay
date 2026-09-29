@@ -173,6 +173,12 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
   // dia con registro. Se avisa en pantalla para que un $0 en las tarjetas
   // de movimiento no se lea como "se perdio la plata".
   const [diaSinMovimiento, setDiaSinMovimiento] = useState(false)
+  /**
+   * SIN SEÑAL SE MUESTRA LO ÚLTIMO QUE SE SUPO, no ceros. Guarda la hora en
+   * que se trajo del servidor para decirlo en pantalla: lo cobrado después sin
+   * señal todavía no está sumado aquí (se sube con la cola).
+   */
+  const [resumenGuardadoEn, setResumenGuardadoEn] = useState<string | null>(null)
   // Recaudo del día partido por forma de pago (script 059).
   const [pagoEfectivo, setPagoEfectivo] = useState(0)
   const [pagoTransferencia, setPagoTransferencia] = useState(0)
@@ -222,7 +228,23 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
         // sin cuotas venciendo ni caja— no tiene fila en la vista, y esta
         // pantalla mostraba entonces Caja Anterior $0 y Efectivo $0. La plata
         // de la ruta desaparecia cada domingo y volvia el lunes.
-        const { fila: d, sinMovimiento } = await getResumenDia(supabase, rutaId, fechaHoy)
+        const { guardarCache, leerCache } = await import("@/lib/offline-cache")
+        type Guardado = Awaited<ReturnType<typeof getResumenDia>>
+        const esHoy = fechaHoy === todayColombia()
+        let traido: Guardado
+        try {
+          if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("Failed to fetch (sin señal)")
+          traido = await getResumenDia(supabase, rutaId, fechaHoy)
+          setResumenGuardadoEn(null)
+          if (esHoy) void guardarCache("resumen-dia", rutaId, traido)
+        } catch (err) {
+          const guardado = esHoy ? await leerCache<Guardado>("resumen-dia", rutaId) : null
+          if (!guardado) throw err
+          console.warn("[v0] Resumen sin señal: se muestra el último guardado", guardado.guardadoEn)
+          traido = guardado.datos
+          setResumenGuardadoEn(guardado.guardadoEn)
+        }
+        const { fila: d, sinMovimiento } = traido
         setDiaSinMovimiento(sinMovimiento)
 
         setCollectedAmount(d.valor_pago ?? 0)
@@ -249,6 +271,10 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
     }
 
     fetchResumen()
+    // Al volver la señal se relee: lo cobrado sin señal ya subió con la cola.
+    const alVolverLaRed = () => { setTimeout(fetchResumen, 4000) }
+    window.addEventListener("online", alVolverLaRed)
+    return () => window.removeEventListener("online", alVolverLaRed)
     // `diaDelResumen` entra acá: al desbloquear una jornada vieja esta
     // pantalla pasa a hablar de otro día y hay que volver a leer.
   }, [rutaId, diaDelResumen])
@@ -261,6 +287,15 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
   // SELECT directo sobre `rutas_diarias` filtrando por ruta_id y fecha.
   // (RLS eliminado.)
   useEffect(() => {
+    // El último estado conocido de hoy (lo guarda app/page.tsx en
+    // `rutaActivaCache`). Es lo que vale cuando no se puede preguntar.
+    const estadoGuardado = (fechaHoy: string): RutaDiariaEstado => {
+      try {
+        const c = JSON.parse(localStorage.getItem("rutaActivaCache") ?? "null")
+        if (c?.rutaId === rutaId && c?.fecha === fechaHoy) return c.estado as RutaDiariaEstado
+      } catch { /* ilegible */ }
+      return null
+    }
     const fetchRutaDiaria = async () => {
       try {
         setLoadingRutaDiaria(true)
@@ -277,18 +312,24 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
         if (error) {
           console.error("[v0] rutas_diarias error:", error.message)
           setRutaDiariaId(null)
-          setRutaDiariaEstado(null)
+          setRutaDiariaEstado(estadoGuardado(fechaHoy))
         } else if (data) {
           setRutaDiariaId(data.id)
           setRutaDiariaEstado(data.estado as RutaDiariaEstado)
           onRouteStateChange?.(data.estado as RutaDiariaEstado)
         } else {
+          // No hay fila... salvo que este teléfono la haya abierto sin señal y
+          // la cola todavía no la haya subido.
+          const { hayInicioDeRutaPendiente } = await import("@/lib/offline-queue")
+          const pendiente = await hayInicioDeRutaPendiente(rutaId, fechaHoy)
           setRutaDiariaId(null)
-          setRutaDiariaEstado(null)
-          onRouteStateChange?.(null)
+          setRutaDiariaEstado(pendiente ? "abierta" : null)
+          onRouteStateChange?.(pendiente ? "abierta" : null)
         }
       } catch (err) {
         console.error("[v0] Unexpected error fetching rutas_diarias:", err)
+        // Sin señal: lo último que se supo de hoy, no "Iniciar ruta".
+        setRutaDiariaEstado(estadoGuardado(todayColombia()))
       } finally {
         setLoadingRutaDiaria(false)
       }
@@ -398,8 +439,20 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
 
   const handleIniciarRuta = async () => {
     if (processingRuta) return
+    // Sin señal la ruta se abre igual: el inicio queda en la cola y se sube
+    // al volver la conexión (ver `iniciar_ruta` en lib/offline-queue.ts).
+    const abrirSinSenal = async () => {
+      const { encolar } = await import("@/lib/offline-queue")
+      await encolar({ tipo: "iniciar_ruta", payload: { fecha: todayColombia() }, descripcion: "Inicio de ruta", id: crypto.randomUUID() })
+      setRutaDiariaEstado("abierta")
+      onRouteStateChange?.("abierta")
+    }
     try {
       setProcessingRuta(true)
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await abrirSinSenal()
+        return
+      }
       const supabase = createClient()
       const fechaHoy = todayColombia()
 
@@ -415,6 +468,7 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
 
       if (error) {
         console.error("[v0] Error iniciando ruta:", error.message)
+        if (/failed to fetch|network/i.test(error.message)) await abrirSinSenal()
         return
       }
 
@@ -425,6 +479,7 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
       }
     } catch (err) {
       console.error("[v0] Unexpected error iniciando ruta:", err)
+      if (/failed to fetch|network/i.test(String((err as Error)?.message ?? err))) await abrirSinSenal()
     } finally {
       setProcessingRuta(false)
     }
@@ -1137,6 +1192,13 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
                   el día que estás cerrando. Es lo que va a cuadrar en el cierre de caja.
                 </p>
               </div>
+            )}
+            {resumenGuardadoEn && (
+              <p className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] font-semibold text-foreground">
+                Sin señal: cifras de las{" "}
+                {new Date(resumenGuardadoEn).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit", timeZone: "America/Bogota" })}.
+                Lo registrado después se suma cuando vuelva la conexión.
+              </p>
             )}
             {/* Dia sin movimiento: la caja viene del ultimo dia con registro */}
             {diaSinMovimiento && (

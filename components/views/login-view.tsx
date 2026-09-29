@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { entrarSinSenal, esErrorDeRed, guardarCredencialOffline, sinSenal } from "@/lib/credenciales-offline"
 import { Lock, User, Loader2, Eye, EyeOff, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -44,14 +45,34 @@ export function LoginView({ onLoginSuccess, aviso }: LoginViewProps) {
       return
     }
 
+    // SIN SEÑAL: se entra con la huella guardada en la última entrada con
+    // señal (lib/credenciales-offline.ts). La clave nunca se guarda.
+    const entrarOffline = async () => {
+      const r = await entrarSinSenal(u, password)
+      if ("user" in r) {
+        onLoginSuccess(r.user)
+      } else {
+        setError(r.motivo)
+      }
+    }
+
     try {
       setLoading(true)
+      if (sinSenal()) {
+        await entrarOffline()
+        return
+      }
       const supabase = createClient()
       const { data, error: rpcError } = await supabase.rpc("login_usuario", {
         p_usuario: u,
         p_password: password,
       })
 
+      if (rpcError && esErrorDeRed(rpcError)) {
+        console.warn("[v0] login_usuario sin red, se intenta la entrada sin señal")
+        await entrarOffline()
+        return
+      }
       if (rpcError) {
         console.error("[v0] login_usuario error:", rpcError.message)
         setError("Usuario o contrasena incorrectos")
@@ -79,8 +100,14 @@ export function LoginView({ onLoginSuccess, aviso }: LoginViewProps) {
         return
       }
 
+      // Para la próxima vez que no haya señal.
+      await guardarCredencialOffline(u, password, user)
       onLoginSuccess(user)
     } catch (err) {
+      if (esErrorDeRed(err)) {
+        await entrarOffline()
+        return
+      }
       console.error("[v0] Login unexpected error:", err)
       setError("No se pudo iniciar sesion. Intenta de nuevo.")
     } finally {

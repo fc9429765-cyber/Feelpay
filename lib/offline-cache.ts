@@ -39,7 +39,7 @@ const DB_NAME = "feelpay-cache"
 const DB_VERSION = 1
 const STORE = "datos"
 
-export type ClaveCache = "dashboard-pagos" | "catalogos" | "ruta-activa"
+export type ClaveCache = "dashboard-pagos" | "catalogos" | "ruta-activa" | "resumen-dia"
 
 interface EntradaCache<T> {
   clave: string
