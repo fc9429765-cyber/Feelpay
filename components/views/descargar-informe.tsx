@@ -16,6 +16,10 @@
  * administrador, una ruta etc") y evita el error de bajar un informe con
  * rutas de otro.
  *
+ * DOS INFORMES: el de movimientos (arriba) y el INFORME DE CARTERA
+ * (`lib/informe-cartera.ts`), la foto de la cartera viva con el formato del
+ * archivo de ejemplo de la empresa. La cartera es de HOY: no usa fechas.
+ *
  * Es de SOLO LECTURA.
  */
 
@@ -38,6 +42,7 @@ import { getSupabaseSafe } from "@/lib/api-helper"
 import { todayColombia } from "@/lib/colombia-date"
 import { useToast } from "@/hooks/use-toast"
 import { generarInformeExcel } from "@/lib/informe-excel"
+import { generarInformeCartera } from "@/lib/informe-cartera"
 
 const TODOS = "__todos"
 
@@ -52,6 +57,7 @@ export function DescargarInforme() {
   const { toast } = useToast()
   const hoy = todayColombia()
 
+  const [informe, setInforme] = useState<"movimientos" | "cartera">("movimientos")
   const [desde, setDesde] = useState(hoy)
   const [hasta, setHasta] = useState(hoy)
   const [admin, setAdmin] = useState(TODOS)
@@ -145,7 +151,47 @@ export function DescargarInforme() {
   const todas = () => setSeleccionadas(new Set(disponibles.map((r) => r.id)))
   const ninguna = () => setSeleccionadas(new Set())
 
+  const bajar = (blob: Blob, nombre: string) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = nombre
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Vacío = todas las disponibles. Si hay un administrador elegido se mandan
+  // las suyas, no una lista vacía que traería todo el país.
+  const rutasElegidas = () =>
+    seleccionadas.size > 0
+      ? [...seleccionadas]
+      : admin === TODOS
+        ? []
+        : disponibles.map((r) => r.id)
+
+  const descargarCartera = async () => {
+    setBajando(true)
+    try {
+      const { blob, nombre, creditos } = await generarInformeCartera(rutasElegidas())
+      bajar(blob, nombre)
+      toast({
+        title: "Informe de cartera descargado",
+        description: creditos === 0 ? "Esas unidades no tienen cartera activa." : `${creditos} créditos con saldo.`,
+      })
+    } catch (err) {
+      console.error("[v0] Informe de cartera:", err)
+      toast({
+        title: "No se pudo generar",
+        description: err instanceof Error ? err.message : "Intenta de nuevo",
+        variant: "destructive",
+      })
+    } finally {
+      setBajando(false)
+    }
+  }
+
   const descargar = async () => {
+    if (informe === "cartera") return descargarCartera()
     if (desde > hasta) {
       toast({
         title: "Rango al revés",
@@ -159,22 +205,10 @@ export function DescargarInforme() {
       const { blob, nombre, conteos } = await generarInformeExcel({
         desde,
         hasta,
-        // Vacío = todas las disponibles. Si hay un administrador elegido se
-        // mandan las suyas, no una lista vacía que traería todo el país.
-        rutaIds:
-          seleccionadas.size > 0
-            ? [...seleccionadas]
-            : admin === TODOS
-              ? []
-              : disponibles.map((r) => r.id),
+        rutaIds: rutasElegidas(),
       })
 
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = nombre
-      a.click()
-      URL.revokeObjectURL(url)
+      bajar(blob, nombre)
 
       const total = Object.values(conteos).reduce((s, n) => s + n, 0)
       toast({
@@ -200,17 +234,50 @@ export function DescargarInforme() {
     <div className="space-y-3">
       <Card>
         <CardContent className="space-y-4 p-4">
-          <div className="flex items-start gap-2">
-            <FileSpreadsheet className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Genera el informe en Excel con siete hojas:{" "}
-              <strong>Pagos</strong>, <strong>No Pagos</strong>,{" "}
-              <strong>Ventas</strong>, <strong>Gastos</strong>,{" "}
-              <strong>Ingresos</strong>, <strong>Retiros</strong> y <strong>Resumen</strong>.
-            </p>
+          {/* ── Qué informe ────────────────────────────────────────────────── */}
+          <div className="space-y-1 md:max-w-md">
+            <Label className="text-[11px] text-muted-foreground">Informe</Label>
+            <div role="radiogroup" className="grid grid-cols-2 gap-2">
+              {([
+                ["movimientos", "Informe de movimientos"],
+                ["cartera", "INFORME DE CARTERA"],
+              ] as const).map(([id, texto]) => (
+                <Button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={informe === id}
+                  variant={informe === id ? "default" : "outline"}
+                  className="h-9 text-xs"
+                  onClick={() => setInforme(id)}
+                >
+                  {texto}
+                </Button>
+              ))}
+            </div>
           </div>
 
-          {/* ── Fechas ────────────────────────────────────────────────────── */}
+          <div className="flex items-start gap-2">
+            <FileSpreadsheet className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+            {informe === "cartera" ? (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                La cartera activa <strong>de hoy</strong>: un renglón por crédito con saldo, con
+                el cliente, lo prestado, lo pagado, el saldo, la mora y el último pago, y una fila
+                de <strong>TOTAL</strong>. Mismo formato y columnas que el archivo de ejemplo. No
+                usa fechas.
+              </p>
+            ) : (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Genera el informe en Excel con siete hojas:{" "}
+                <strong>Pagos</strong>, <strong>No Pagos</strong>,{" "}
+                <strong>Ventas</strong>, <strong>Gastos</strong>,{" "}
+                <strong>Ingresos</strong>, <strong>Retiros</strong> y <strong>Resumen</strong>.
+              </p>
+            )}
+          </div>
+
+          {/* ── Fechas (la cartera es de hoy: no las usa) ─────────────────── */}
+          {informe === "movimientos" && (
           <div className="grid grid-cols-2 gap-2 md:max-w-md">
             <div className="space-y-1">
               <Label className="text-[11px] text-muted-foreground">Desde</Label>
@@ -231,6 +298,7 @@ export function DescargarInforme() {
               />
             </div>
           </div>
+          )}
 
           {/* ── Administrador ─────────────────────────────────────────────── */}
           <div className="space-y-1 md:max-w-md">
@@ -319,10 +387,10 @@ export function DescargarInforme() {
               ) : (
                 <Download className="h-4 w-4" />
               )}
-              {bajando ? "Generando…" : "Descargar informe"}
+              {bajando ? "Generando…" : informe === "cartera" ? "Descargar cartera" : "Descargar informe"}
             </Button>
             <Badge variant="secondary" className="text-[11px]">
-              {desde === hasta ? desde : `${desde} → ${hasta}`}
+              {informe === "cartera" ? `Cartera al ${hoy}` : desde === hasta ? desde : `${desde} → ${hasta}`}
             </Badge>
           </div>
         </CardContent>

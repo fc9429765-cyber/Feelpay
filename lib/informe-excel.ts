@@ -89,6 +89,39 @@ const FRECUENCIAS: Record<string, string> = {
   monthly: "MENSUAL",
 }
 
+/**
+ * "UNID 190 - CALEB": el número de la unidad y su administrador, como lo
+ * pidió la empresa. El número es el id de la ruta (en esta base el id ES la
+ * unidad); el nombre, el administrador ASIGNADO en Usuarios y Rutas (si son
+ * varios, "A / B"). No se usa `rutas.idadmin`: está desactualizado —la 190
+ * dice 1 y su administrador es CALEB—. Sin administrador queda "UNID 190".
+ *
+ * La usan los dos informes (movimientos y cartera): una sola regla.
+ */
+export async function cargarNombreVendedor(
+  sb: Awaited<ReturnType<typeof getSupabaseSafe>>,
+): Promise<(rutaId: number) => string> {
+  const { data } = await sb
+    .from("usuario_rutas")
+    .select("ruta_id, usuarios!inner(nombre, rol, activo)")
+    .eq("usuarios.rol", "admin")
+  const adminsPorRuta = new Map<number, string[]>()
+  for (const a of (data ?? []) as unknown as {
+    ruta_id: number
+    usuarios: { nombre: string | null; activo: boolean | null } | null
+  }[]) {
+    const nombre = a.usuarios?.nombre?.trim()
+    if (!nombre || a.usuarios?.activo === false) continue
+    const lista = adminsPorRuta.get(Number(a.ruta_id)) ?? []
+    if (!lista.includes(nombre)) lista.push(nombre)
+    adminsPorRuta.set(Number(a.ruta_id), lista)
+  }
+  return (rutaId: number) => {
+    const admins = adminsPorRuta.get(rutaId)
+    return admins?.length ? `UNID ${rutaId} - ${admins.join(" / ")}` : `UNID ${rutaId}`
+  }
+}
+
 export interface FiltrosInforme {
   desde: string
   hasta: string
@@ -128,7 +161,7 @@ export async function generarInformeExcel(
     return (q as { in: (c: string, v: number[]) => T }).in("ruta", rutaIds)
   }
 
-  const [resGes, resMov, resVentas, resRutas, resResumen, resAdmins] = await Promise.all([
+  const [resGes, resMov, resVentas, resResumen, vendedor] = await Promise.all([
     enRutas(
       sb
         .from("gestiones")
@@ -153,7 +186,6 @@ export async function generarInformeExcel(
         .gte("fecha_creacion", desdeUtc)
         .lt("fecha_creacion", hastaUtc),
     ),
-    sb.from("rutas").select("id, nombre, ciudad, pais"),
     enRutas(
       sb
         .from("resumen_diario_v2")
@@ -161,43 +193,10 @@ export async function generarInformeExcel(
         .gte("fecha_pago", desde)
         .lte("fecha_pago", hasta),
     ),
-    // Los administradores ASIGNADOS a cada ruta (Usuarios y Rutas). No se usa
-    // `rutas.idadmin`: está desactualizado —la 190 dice 1 y su administrador
-    // es CALEB—, y la asignación es lo que la empresa mantiene al día.
-    sb.from("usuario_rutas").select("ruta_id, usuarios!inner(nombre, rol, activo)").eq("usuarios.rol", "admin"),
+    cargarNombreVendedor(sb),
   ])
 
   if (resGes.error) throw new Error(resGes.error.message)
-
-  const rutas = new Map(
-    ((resRutas.data ?? []) as unknown as {
-      id: number
-      nombre: string | null
-    }[]).map((r) => [r.id, r.nombre ?? String(r.id)]),
-  )
-
-  const adminsPorRuta = new Map<number, string[]>()
-  for (const a of (resAdmins.data ?? []) as unknown as {
-    ruta_id: number
-    usuarios: { nombre: string | null; activo: boolean | null } | null
-  }[]) {
-    const nombre = a.usuarios?.nombre?.trim()
-    if (!nombre || a.usuarios?.activo === false) continue
-    const lista = adminsPorRuta.get(Number(a.ruta_id)) ?? []
-    if (!lista.includes(nombre)) lista.push(nombre)
-    adminsPorRuta.set(Number(a.ruta_id), lista)
-  }
-
-  /**
-   * "UNID 190 - CALEB": el número de la unidad y su administrador, como lo
-   * pidió la empresa. El número es el id de la ruta (en esta base el id ES la
-   * unidad); el nombre, el administrador asignado (si son varios, "A / B").
-   * Sin administrador asignado queda solo "UNID 190": mejor que inventarlo.
-   */
-  const vendedor = (rutaId: number): string => {
-    const admins = adminsPorRuta.get(rutaId)
-    return admins?.length ? `UNID ${rutaId} - ${admins.join(" / ")}` : `UNID ${rutaId}`
-  }
 
   // ── Los créditos que aparecen, con su cliente y su ficha ─────────────────
   const gestiones = (resGes.data ?? []) as unknown as Gestion[]
