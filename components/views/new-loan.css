@@ -14,8 +14,10 @@
   --cv-surface: #fff;
   /* MÁS OSCUROS QUE EL DISEÑO, a pedido del dueño: en la calle, al sol, el
      gris de las etiquetas y de los datos bloqueados se perdía. */
-  --cv-text: #0b0d10;
-  --cv-muted: #2f3742;
+  /* Segunda vuelta (30-sep-2026): el dueño la pidió TODAVÍA más oscura.
+     Texto negro puro y los grises bajados a casi negro. */
+  --cv-text: #000;
+  --cv-muted: #1c222b;
   --cv-border: #e0e7f1;
   --cv-band: #e3eefc;
   --cv-navy: #0f3a80;
@@ -24,7 +26,7 @@
   --cv-input: #c9d3e0;
   --cv-lock-bg: #eef1f5;
   --cv-lock-border: #d5dce6;
-  --cv-lock-text: #3a434f;
+  --cv-lock-text: #111820;
   --cv-tint: #eef4fd;
   --cv-tint-border: #c9dbf5;
   --cv-outline: #9fbdea;
@@ -103,11 +105,11 @@
 .cv-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .cv-label { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; color: var(--cv-text); }
 .cv-req { color: var(--cv-req); font-weight: 700; }
-.cv-opt { color: var(--cv-muted); font-weight: 400; font-size: 13px; }
+.cv-opt { color: var(--cv-muted); font-weight: 600; font-size: 13px; }
 .cv-control { position: relative; display: flex; align-items: center; min-width: 0; }
 .cv-ico-l { position: absolute; left: 14px; display: flex; pointer-events: none; }
 .cv-ico-r { position: absolute; right: 12px; display: flex; pointer-events: none; }
-.cv-hint { font-size: 12px; color: var(--cv-muted); padding-left: 4px; font-weight: 600; }
+.cv-hint { font-size: 12px; color: var(--cv-muted); padding-left: 4px; font-weight: 700; }
 .cv-error { font-size: 12px; color: var(--cv-req); }
 
 /* Los inputs de la app se pintan con `!important` en @layer base
@@ -158,7 +160,12 @@
 .cv-peso { position: absolute; left: 16px; font-size: 17px; pointer-events: none; }
 .cv-chevron { position: absolute; right: 14px; pointer-events: none; color: var(--cv-blue); }
 .cv-telefono { display: flex; gap: 6px; }
-.cv-telefono .cv-indicativo { width: 96px; flex: none; }
+.cv-telefono .cv-indicativo { width: 90px; flex: none; }
+/* El número completo tiene que verse: el ícono de WhatsApp mide 26px y está
+   a 12px del borde, así que 40px de relleno le alcanzan. */
+@layer base {
+  .cv-root .cv-telefono input.cv-input--pr:not([type="checkbox"]) { padding-right: 40px !important; }
+}
 /* La LISTA muestra "+57 · Colombia", pero la casilla cerrada solo el código:
    el texto del select se vuelve transparente y encima se pinta el código,
    así el número conserva su ancho. */
@@ -189,7 +196,10 @@
 .cv-file { display: none; }
 
 /* ── Grillas de las secciones ──────────────────────────────────────────── */
-.cv-grid-cliente { display: grid; grid-template-columns: 164px minmax(0, 1fr) minmax(0, 1fr); gap: 8px 16px; }
+/* La tercera columna (Nombre completo / Teléfono) un poco más ancha: con el
+   indicativo al lado, el número de 10-11 dígitos salía cortado. El documento
+   y el alias, en la columna del medio, entran de sobra. */
+.cv-grid-cliente { display: grid; grid-template-columns: 164px minmax(0, 1fr) minmax(0, 1.45fr); gap: 8px 16px; }
 .cv-grid-cliente .cv-photo { grid-row: span 2; font-size: 16px; }
 .cv-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .cv-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -243,7 +253,7 @@
 .cv-evid--err { border-color: var(--cv-req); }
 .cv-evid-text { display: flex; flex-direction: column; gap: 1px; }
 .cv-evid-title { font-size: 15px; color: var(--cv-navy); font-weight: 500; }
-.cv-evid-sub { font-size: 12px; color: var(--cv-muted); font-weight: 600; }
+.cv-evid-sub { font-size: 12px; color: var(--cv-muted); font-weight: 700; }
 
 /* Pie */
 .cv-foot { display: flex; flex-direction: column; gap: 10px; padding: 0 2px; }
@@ -271,8 +281,19 @@
    desaparecía y la casilla parecía vacía sin pista de qué va. */
 @layer base {
   .cv-root input.cv-input::placeholder, .cv-root textarea.cv-input::placeholder {
-    color: #525c69 !important; opacity: 1; font-weight: 500;
+    color: #363e49 !important; opacity: 1; font-weight: 600;
   }
 }
 .cv-root .cv-photo, .cv-root .cv-seg button, .cv-root .cv-chip, .cv-root .cv-sim, .cv-root .cv-reverso,
 .cv-root .cv-info, .cv-root .cv-evid-title { font-weight: 700; }
+
+/* LO QUE VIENE DE LA APP (Tailwind) dentro de la venta: el gris de
+   `text-muted-foreground` es el de toda la app y al sol no se leía. Acá
+   adentro va con el gris oscuro del formulario. */
+.cv-root .text-muted-foreground { color: var(--cv-muted) !important; }
+/* Los campos: el texto escrito un punto más grueso. */
+@layer base {
+  .cv-root input.cv-input:not([type="checkbox"]):not([type="radio"]),
+  .cv-root select.cv-input,
+  .cv-root textarea.cv-input { font-weight: 700 !important; }
+}

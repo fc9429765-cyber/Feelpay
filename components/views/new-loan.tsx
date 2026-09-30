@@ -2894,7 +2894,7 @@ export function NewLoan({
                     <input
                       id="documento"
                       className={`cv-input cv-input--pr${docBloqueado ? " cv-input--locked" : ""}${cvErr("documento")}`}
-                      placeholder={datosBloqueados ? "Lo llena la cédula" : "Número de documento"}
+                      placeholder={datosBloqueados ? "De la cédula" : "N.º de documento"}
                       value={documento}
                       readOnly={docBloqueado}
                       disabled={procesandoCedula}
@@ -3671,11 +3671,11 @@ export function NewLoan({
             </DialogDescription>
           </DialogHeader>
           <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 18px", fontSize: 15 }}>
-            <span style={{ color: "#5b6573" }}>Capital</span><b>{mostrarMonto(valor) || "$ 0"}</b>
-            <span style={{ color: "#5b6573" }}>Interés</span><b>{prestamoEmpleado ? "Sin interés" : `${tasaInteres || 0} %`}</b>
-            <span style={{ color: "#5b6573" }}>Total a devolver</span><b>{mostrarMonto(valorAPagar) || "$ 0"}</b>
-            <span style={{ color: "#5b6573" }}>Cuotas</span><b>{dias || "—"}</b>
-            <span style={{ color: "#5b6573" }}>Valor de cuota</span><b style={{ color: "#16a34a" }}>{mostrarMonto(valorCuota) || "$ 0"}</b>
+            <span style={{ color: "#1c222b", fontWeight: 600 }}>Capital</span><b>{mostrarMonto(valor) || "$ 0"}</b>
+            <span style={{ color: "#1c222b", fontWeight: 600 }}>Interés</span><b>{prestamoEmpleado ? "Sin interés" : `${tasaInteres || 0} %`}</b>
+            <span style={{ color: "#1c222b", fontWeight: 600 }}>Total a devolver</span><b>{mostrarMonto(valorAPagar) || "$ 0"}</b>
+            <span style={{ color: "#1c222b", fontWeight: 600 }}>Cuotas</span><b>{dias || "—"}</b>
+            <span style={{ color: "#1c222b", fontWeight: 600 }}>Valor de cuota</span><b style={{ color: "#16a34a" }}>{mostrarMonto(valorCuota) || "$ 0"}</b>
           </div>
           {showAmortization && amortizacionTable.length > 0 && (
             <div className="max-h-[50vh] overflow-auto">
