@@ -1576,7 +1576,7 @@ export function NewLoan({
         apodo: "Apodo",
         telefono: "Teléfono",
         direccion: "Dirección",
-        tipoComercio: "Tipo de comercio",
+        tipoComercio: "Nombre del establecimiento",
         amount: "Valor del préstamo",
         dias: "Número de cuotas",
         frequency: "Frecuencia de pago",
@@ -3191,33 +3191,30 @@ export function NewLoan({
           )}
         </Seccion>
 
-        {/* ── Datos del comercio (cliente nuevo) ──────────────────────────
-            En un cliente que ya existe solo se puede agregar el Alias 2. */}
+        {/* ── Datos del comercio (solo cliente nuevo) ─────────────────────
+            EL ALIAS 2 YA NO SE PIDE EN LA VENTA (30-sep-2026): es una
+            configuración interna que se pone después desde Control de
+            Clientes o el editor de ventas. Sin él, a un cliente que ya existe
+            esta sección no le pide nada, así que no se muestra. */}
+        {isNewClient && (
         <Seccion icon={Store} title="Datos del comercio">
-          {isNewClient ? (
             <div className="cv-grid-comercio">
-              <div className="cv-field">
-                <CvLabel req>Tipo de comercio</CvLabel>
+              {/* El nombre del ESTABLECIMIENTO, no el tipo: es lo que el
+                  cobrador reconoce en la calle ("Panadería Mi Rey"). Se
+                  guarda en `clients.tipo_comercio`, la misma columna de
+                  siempre: el resto de la app lo sigue leyendo de ahí. */}
+              <div className="cv-field cv-span-2">
+                <CvLabel req>Nombre del establecimiento</CvLabel>
                 <div className="cv-control">
                   <span className="cv-ico-l"><Store size={24} fill="#1f6fe0" color="#1f6fe0" strokeWidth={1.5} /></span>
                   <input
                     id="tipoComercio"
                     className={`cv-input cv-input--pl uppercase placeholder:normal-case${cvErr("tipoComercio")}`}
-                    placeholder="Ej: tienda, restaurante"
+                    placeholder="Ej: Panadería Mi Rey"
                     value={tipoComercio}
                     onChange={(e) => { setTipoComercio(e.target.value.toUpperCase()); clearFieldError("tipoComercio") }}
                   />
                 </div>
-              </div>
-              <div className="cv-field">
-                <CvLabel opt="(opcional)">Alias 2</CvLabel>
-                <input
-                  id="apodo2"
-                  className="cv-input uppercase placeholder:normal-case"
-                  placeholder="Otro nombre con el que se le conoce"
-                  value={apodo2}
-                  onChange={(e) => setApodo2(e.target.value.toUpperCase())}
-                />
               </div>
               <div className="cv-local">
                 <CvLabel opt="(opcional)">Foto del local</CvLabel>
@@ -3251,40 +3248,8 @@ export function NewLoan({
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="cv-grid-2">
-              <div className="cv-field">
-                <CvLabel opt="(opcional)">Alias 2</CvLabel>
-                <input
-                  id="apodo2"
-                  className="cv-input uppercase placeholder:normal-case"
-                  placeholder="Otro nombre con el que se le conoce"
-                  value={apodo2}
-                  onChange={(e) => setApodo2(e.target.value.toUpperCase())}
-                />
-                <span className="cv-hint">Se agrega al cliente. Vacío = no se toca.</span>
-              </div>
-              <div />
-            </div>
-          )}
-
-          {/* CON CUÁL DE LOS DOS SE VE ESTE PRÉSTAMO. Solo con dos apodos
-              distintos: lo elegido manda en lista de cobro, recibo y
-              extracto. */}
-          {isNewClient && apodo.trim() && apodo2.trim() &&
-            apodo.trim().toLowerCase() !== apodo2.trim().toLowerCase() && (
-            <div className="cv-field">
-              <CvLabel>¿Con cuál alias se verá este préstamo?</CvLabel>
-              <div className="cv-seg" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-                {([1, 2] as const).map((n) => (
-                  <button key={n} type="button" role="radio" aria-checked={apodoElegido === n} onClick={() => setApodoElegido(n)}>
-                    {n === 1 ? apodo.trim() : apodo2.trim()}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </Seccion>
+        )}
 
         {/* ── Datos de la venta ─────────────────────────────────────────── */}
         <Seccion icon={CircleDollarSign} relleno title="Datos de la venta">
