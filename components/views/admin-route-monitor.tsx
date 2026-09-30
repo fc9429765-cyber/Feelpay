@@ -49,6 +49,7 @@ import {
   Filter,
   Snowflake,
   Unlock,
+  Target,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { habilitarCierreAtrasado, puedeDescongelar } from "@/lib/jornada-pendiente"
@@ -160,6 +161,12 @@ type MonitoreoRuta = {
     ventas: number
     final: number
   } | null
+  /**
+   * LA META DEL DÍA y lo recaudado contra ella. De `resumen_diario_v2`, la
+   * MISMA fila que muestra el Resumen del Día del cobrador (`meta_pagos` vs
+   * `valor_pago`): así el monitoreo y el teléfono dicen el mismo porcentaje.
+   */
+  meta: { meta: number; recaudo: number } | null
 }
 
 type FinancialMovement = {
@@ -219,6 +226,27 @@ const formatCurrency = (n: number | null | undefined) =>
   `$${(Number(n) || 0).toLocaleString()}`
 
 const formatHora = (iso: string | null) => horaColombia(iso)
+
+/**
+ * CÓMO VA LA META DE UNA RUTA.
+ *
+ * Mientras la jornada está EN CURSO no se juzga en rojo: a las diez de la
+ * mañana faltan horas de cobro (la misma regla del Resumen del Día). Se
+ * muestra el avance en azul y cuánto falta. Con el día terminado —cerrada o
+ * un día pasado— sí: verde si llegó, rojo si no.
+ */
+function estadoMeta(m: { meta: number; recaudo: number }, terminado: boolean) {
+  const pct = m.meta > 0 ? (m.recaudo / m.meta) * 100 : 0
+  const cumplida = m.meta > 0 && m.recaudo >= m.meta
+  const color = cumplida
+    ? "var(--success)"
+    : terminado
+      ? "var(--destructive)"
+      : pct >= 50
+        ? "var(--info)"
+        : "var(--warning)"
+  return { pct, cumplida, falta: Math.max(0, m.meta - m.recaudo), color }
+}
 
 // `estadoVisual` vivía acá y traducía el tipo de UN evento al vocabulario de
 // la pantalla. Ya no hace falta: las filas son de un CLIENTE, no de un evento,
@@ -581,6 +609,7 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
               cantidad_ventas_homologadas: 0,
               fecha: dia,
               caja: null,
+              meta: null,
             } satisfies MonitoreoRuta
           }),
         )
@@ -639,7 +668,7 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
         let caja = supabase
           .from("resumen_diario_v2")
           .select(
-            "ruta, fecha_pago, caja_anterior, efectivo, valor_pago, " +
+            "ruta, fecha_pago, caja_anterior, efectivo, valor_pago, meta_pagos, " +
               "valor_ingresos, valor_gastos, valor_retiros, valor_ventas_caja",
           )
           .gte("fecha_pago", desde)
@@ -648,7 +677,12 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
         const { data: cajaRows, error: cajaErr } = await caja
         if (cajaErr) throw cajaErr
         const porDia = new Map<string, MonitoreoRuta["caja"]>()
+        const metaPorDia = new Map<string, MonitoreoRuta["meta"]>()
         for (const c of (cajaRows ?? []) as Record<string, unknown>[]) {
+          metaPorDia.set(`${c.ruta}|${String(c.fecha_pago).slice(0, 10)}`, {
+            meta: Number(c.meta_pagos) || 0,
+            recaudo: Number(c.valor_pago) || 0,
+          })
           porDia.set(`${c.ruta}|${String(c.fecha_pago).slice(0, 10)}`, {
             inicial: Number(c.caja_anterior) || 0,
             recaudo: Number(c.valor_pago) || 0,
@@ -661,6 +695,7 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
         }
         for (const r of todas) {
           r.caja = porDia.get(`${r.ruta_id}|${r.fecha ?? ""}`) ?? null
+          r.meta = metaPorDia.get(`${r.ruta_id}|${r.fecha ?? ""}`) ?? null
         }
       } catch (e) {
         // Que falle la caja no puede tumbar el monitoreo entero: las filas ya
@@ -1346,6 +1381,38 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
         </Card>
       ) : (
         <Card className="overflow-hidden border-border/60 shadow-steel">
+          {/* LA META DE TODAS DE UN VISTAZO. Se cuenta en RUTAS y no en plata:
+              cada ruta puede tener su moneda y sumar guaraníes con pesos no
+              dice nada. Solo con un día elegido: en un período, cada fila es
+              una ruta en un día distinto. */}
+          {esUnSoloDia && (() => {
+            const conMeta = rutasFiltradas.filter((r) => r.meta && r.meta.meta > 0)
+            if (conMeta.length === 0) return null
+            const terminado = hasta < todayColombia()
+            const estados = conMeta.map((r) =>
+              estadoMeta(r.meta!, terminado || (r.estado_ruta ?? "").toLowerCase() === "cerrada"),
+            )
+            const cumplidas = estados.filter((e) => e.cumplida).length
+            const bajas = estados.filter((e) => !e.cumplida && e.pct < 50).length
+            const promedio = estados.reduce((s, e) => s + Math.min(100, e.pct), 0) / estados.length
+            return (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b bg-muted/30 px-3 py-2 text-xs lg:px-4">
+                <span className="flex items-center gap-1.5 font-semibold">
+                  <Target className="h-3.5 w-3.5 text-brand" />
+                  Meta del día
+                </span>
+                <span>
+                  <b className="text-success">{cumplidas}</b> de {conMeta.length} rutas cumplidas
+                </span>
+                {bajas > 0 && (
+                  <span>
+                    <b className="text-warning">{bajas}</b> bajo el 50%
+                  </span>
+                )}
+                <span className="text-muted-foreground">Avance promedio {Math.round(promedio)}%</span>
+              </div>
+            )
+          })()}
           <div className="divide-y divide-border">
             {rutasFiltradas.map((r) => {
               const isAbierta = (r.estado_ruta ?? "").toLowerCase() === "abierta"
@@ -1436,7 +1503,10 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
                             duplicado. */}
                         {esUnSoloDia ? "Ruta" : (r.fecha ?? "")}
                       </span>
-                      <div className="flex items-center gap-1.5">
+                      {/* `flex-wrap`: con "Sin apertura" y "4 sin cuotas" juntos
+                          la fila pasaba de los 190px de la columna y las
+                          etiquetas se montaban encima del recaudo. */}
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-lg font-bold leading-none text-brand lg:text-xl">
                           #{r.ruta_id}
                         </span>
@@ -1583,6 +1653,43 @@ export function AdminRouteMonitor({ currentUser }: AdminRouteMonitorProps) {
                           {formatCurrency(r.caja.final)}
                         </span>
                       </span>
+                    )}
+
+                    {/* LA META DEL DÍA: barra, porcentaje y cuánto falta.
+                        Es lo que se pidió para "darse cuenta a tiempo": una
+                        ruta en 20% a mediodía se ve desde acá, sin abrirla. */}
+                    {r.meta && r.meta.meta > 0 && (() => {
+                      const e = estadoMeta(r.meta, isCerrada || !esHoy)
+                      return (
+                        <div
+                          className="mt-1 w-full min-w-[150px] lg:w-[170px]"
+                          title={`Meta del día ${formatCurrency(r.meta.meta)} · recaudado ${formatCurrency(r.meta.recaudo)} (lo mismo que ve el cobrador en su Resumen del Día)`}
+                        >
+                          <div className="flex items-center justify-between gap-1 text-[10px] tabular-nums">
+                            <span className="flex items-center gap-1 uppercase tracking-wide text-muted-foreground">
+                              <Target className="h-3 w-3" />
+                              Meta {formatCurrency(r.meta.meta)}
+                            </span>
+                            <span className="font-bold" style={{ color: e.color }}>{Math.round(e.pct)}%</span>
+                          </div>
+                          <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${Math.min(100, e.pct)}%`, background: e.color }}
+                            />
+                          </div>
+                          <span className="text-[10px] tabular-nums" style={{ color: e.cumplida ? e.color : undefined }}>
+                            {e.cumplida
+                              ? "Meta cumplida"
+                              : isCerrada || !esHoy
+                                ? `Quedó faltando ${formatCurrency(e.falta)}`
+                                : `Falta ${formatCurrency(e.falta)}`}
+                          </span>
+                        </div>
+                      )
+                    })()}
+                    {r.meta && r.meta.meta <= 0 && (
+                      <span className="mt-0.5 text-[10px] text-muted-foreground">Sin meta ese día</span>
                     )}
                   </div>
 
