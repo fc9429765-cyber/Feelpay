@@ -13,6 +13,31 @@ input[type="number"] {
   -moz-appearance: textfield;
 }
 
+/* ── Campos de fecha: que no se salgan de su caja en el iPhone ──────────────
+   Safari (iOS) le da a <input type="date"> un ancho mínimo propio, centra la
+   fecha y le suma su relleno interno, así que el campo ignora el `w-full` y
+   se sale de la tarjeta (se vio en Registro de Gasto e Ingreso). Sin la
+   apariencia nativa vuelve a obedecer el ancho de su contenedor. En Chrome no
+   cambia nada. */
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"],
+input[type="month"] {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+input[type="date"]::-webkit-date-and-time-value,
+input[type="datetime-local"]::-webkit-date-and-time-value,
+input[type="time"]::-webkit-date-and-time-value,
+input[type="month"]::-webkit-date-and-time-value {
+  text-align: left;
+  margin: 0;
+  min-height: 1.2em;
+}
+
 /* ── Admin Route Monitor · map amount tooltip ───────────────────────────── */
 .admin-route-amount-tooltip.leaflet-tooltip {
   background: transparent !important;
