@@ -44,6 +44,7 @@ import { Bandera } from "@/components/bandera"
 import { useToast } from "@/hooks/use-toast"
 import type { MapPoint } from "./admin-route-monitor-map"
 import "./detalle-ruta.css"
+import { useClientesAsignados } from "@/lib/use-clientes-asignados"
 
 /** El mismo mapa del Monitoreo de Rutas, que ya dibuja el recorrido en orden. */
 const MapaRuta = dynamic(() => import("./admin-route-monitor-map"), {
@@ -284,7 +285,6 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
   const [hayJornada, setHayJornada] = useState(false)
   const [horaInicio, setHoraInicio] = useState<string | null>(null)
   const [horaFin, setHoraFin] = useState<string | null>(null)
-  const [clientesCount, setClientesCount] = useState(0)
   const [observacion, setObservacion] = useState("")
   const [nota, setNota] = useState("")
   const [guardandoNota, setGuardandoNota] = useState(false)
@@ -328,6 +328,7 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
   )
   const money = useCallback((v: number) => formatearMoneda(v, moneda), [moneda])
   const nombreRuta = ruta ? tituloRuta(ruta.nombre) : rutaId != null ? `Ruta ${rutaId}` : "Ruta"
+  const clientesAsignados = useClientesAsignados(rutaId)
 
   // Cerrar cualquier menú al tocar afuera.
   useEffect(() => {
@@ -422,10 +423,9 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
 
       const dayStart = `${fecha}T00:00:00-05:00`
       const dayEnd = `${fecha}T23:59:59-05:00`
-      const [resResumen, resDia, resClientes, resPlan, resGest, resGastos, resVentas] = await Promise.all([
+      const [resResumen, resDia, resPlan, resGest, resGastos, resVentas] = await Promise.all([
         getResumenDia(sb, rutaId, fecha),
         leerDia(),
-        sb.from("clients").select("id", { count: "exact", head: true }).eq("ruta", rutaId),
         // CLIENTES: sale del CRONOGRAMA, no de los pagos. La pregunta es "a
         // quién había que cobrarle", así que los que NO pagaron aparecen.
         sb.from("payment_plan")
@@ -465,7 +465,6 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
       setHoraFin(dia?.hora_fin ?? null)
       setObservacion(dia?.observacion ?? "")
       setNota(dia?.observacion ?? "")
-      setClientesCount(resClientes.count ?? 0)
 
       const f = (resResumen.fila ?? {}) as unknown as Record<string, unknown>
       const n = (v: unknown) => Number(v) || 0
@@ -1002,7 +1001,12 @@ export function DetalleRuta({ currentUserId, currentUserNombre, rutaInicial, onV
                 <div className="dr-box dr-hero-stat">
                   <Users {...IC} size={24} />
                   <div>
-                    <div className="dr-hero-stat-num">{clientesCount}</div>
+                    {/* CLIENTES ASIGNADOS = los que tienen préstamo ACTIVO en la
+                        ruta, contados en el momento (lib/use-clientes-asignados).
+                        Antes contaba TODAS las fichas de la ruta, incluidas las
+                        de clientes que ya terminaron de pagar: la 151 decía 48
+                        con 27 activos. */}
+                    <div className="dr-hero-stat-num">{clientesAsignados ?? "—"}</div>
                     <div className="dr-hero-stat-lbl">Clientes asignados</div>
                   </div>
                 </div>
