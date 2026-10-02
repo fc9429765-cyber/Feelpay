@@ -34,12 +34,13 @@
 
 import { useEffect, useState } from "react"
 import {
-  ArrowLeftRight, BarChart3, Banknote, CalendarDays, CheckCircle2, ShoppingBag, ShoppingCart, XCircle,
+  ArrowLeftRight, BarChart3, Banknote, CalendarDays, CheckCircle2, Eye, ShoppingBag, ShoppingCart, XCircle,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { createClient } from "@/lib/supabase/client"
 import { sumarDias } from "@/lib/gestion-core"
 import { formatearMoneda } from "@/lib/monedas"
+import { DetalleSemanal } from "@/components/detalle-semanal"
 
 interface Props {
   rutaId: number
@@ -78,6 +79,8 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
   const [habilitado, setHabilitado] = useState(false)
   const [nombreRuta, setNombreRuta] = useState("")
   const [semana, setSemana] = useState<Semana | null>(null)
+  /** El detalle (días y pagos por cliente) que abre el ojito. */
+  const [verDetalle, setVerDetalle] = useState(false)
 
   const lunes = lunesDe(fecha)
   const domingo = sumarDias(lunes, 6)
@@ -155,6 +158,16 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
           <p className="min-w-0 text-[clamp(12px,3.8vw,14px)] font-bold leading-tight text-foreground">
             Resumen Semanal{nombreRuta ? ` (${nombreRuta})` : ""}
           </p>
+          {/* EL OJITO: el detalle día por día, y de ahí los pagos de un día. */}
+          <button
+            type="button"
+            onClick={() => setVerDetalle(true)}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-muted"
+            title="Ver el detalle de la semana"
+            aria-label="Ver el detalle de la semana"
+          >
+            <Eye className="h-4 w-4" />
+          </button>
           <span className="ml-auto whitespace-nowrap text-xs tabular-nums text-muted-foreground">
             {rango(lunes, domingo)}
           </span>
@@ -196,6 +209,16 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
           </p>
         </div>
       </CardContent>
+      {verDetalle && (
+        <DetalleSemanal
+          rutaId={rutaId}
+          unidad={`UNID ${rutaId}`}
+          lunes={lunes}
+          fecha={fecha}
+          moneda={moneda}
+          onClose={() => setVerDetalle(false)}
+        />
+      )}
     </Card>
   )
 }
