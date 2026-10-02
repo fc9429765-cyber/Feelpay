@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import {
   ArrowLeft, Calendar, Clock, Wallet, Banknote, Target, ShoppingCart,
   CheckCircle, Receipt, ArrowDownCircle, TrendingUp, CreditCard,
-  CalendarDays, CalendarClock, PiggyBank, Coins, Users, AlertCircle, XCircle,
+  CalendarDays, CalendarClock, Coins, Users, AlertCircle, XCircle,
   FileDown, Lock, LockKeyhole, LockKeyholeOpen, AlertTriangle, CheckCircle2, Loader2, Share2,
 } from "lucide-react"
  import { createClient } from "@/lib/supabase/client"
@@ -198,9 +198,8 @@ export function CierreCaja({
   // ── Datos reales del cierre ────────────────────────────────────────────
   // Fuentes: resumen_diario_v2 (misma vista que Resumen del Día — los números
   // coinciden entre ambas pantallas por construcción, incluida la Caja
-  // Anterior, que ahora es una columna), payment_plan (conteos del día y
-  // cuotas vencidas) y v_loan_financiero (cartera, por CUOTAS en mora, con
-  // las bandas de `bandaCartera()`).
+  // Anterior, que ahora es una columna) y v_loan_financiero (cartera, por
+  // CUOTAS en mora, con las bandas de `bandaCartera()`).
   type FrecKey = "diario" | "semanal" | "quincenal" | "mensual"
   const [cierreData, setCierreData] = useState({
     cajaAnterior: 0,
@@ -218,7 +217,6 @@ export function CierreCaja({
       quincenal: { pagos: 0, total: 0 },
       mensual: { pagos: 0, total: 0 },
     } as Record<FrecKey, { pagos: number; total: number }>,
-    cuotas: { de0a3: 0, de3oMas: 0 },
     cartera: { alDia: 0, mora: 0, vencidos: 0 },
   })
 
@@ -272,7 +270,6 @@ export function CierreCaja({
                 quincenal: { pagos: 0, total: 0 }, mensual: { pagos: 0, total: 0 } }
 
         const loanIds = ((loansRes.data ?? []) as { id: string }[]).map((l) => l.id)
-        let cuotas = { de0a3: 0, de3oMas: 0 }
         let cartera = { alDia: 0, mora: 0, vencidos: 0 }
         // LAS DOS SECCIONES QUE SOLO SABEN DE HOY.
         //
@@ -282,27 +279,7 @@ export function CierreCaja({
         // (ver `rows`). Un papel con la fecha de ayer y la cartera de hoy es
         // peor que un papel que no la trae.
         if (!esAtrasado && loanIds.length > 0) {
-          const [vencidasRes, moraRes] = await Promise.all([
-            // Cuotas vencidas: `fecha_pago` es el VENCIMIENTO inmutable del
-            // cronograma, así que pendiente + vencida antes de hoy sigue
-            // siendo la definición correcta.
-            supabase
-              .from("payment_plan")
-              .select("loan_id")
-              .eq("estado", "pendiente")
-              .lt("fecha_pago", fechaObjetivo)
-              .in("loan_id", loanIds),
-            supabase.from("v_loan_financiero").select("loan_id, cuotas_mora").in("loan_id", loanIds),
-          ])
-
-          const vencidasPorLoan = new Map<string, number>()
-          for (const v of (vencidasRes.data ?? []) as { loan_id: string }[]) {
-            vencidasPorLoan.set(v.loan_id, (vencidasPorLoan.get(v.loan_id) ?? 0) + 1)
-          }
-          for (const id of loanIds) {
-            if ((vencidasPorLoan.get(id) ?? 0) > 3) cuotas.de3oMas += 1
-            else cuotas.de0a3 += 1
-          }
+          const moraRes = await supabase.from("v_loan_financiero").select("loan_id, cuotas_mora").in("loan_id", loanIds)
 
           const moraPorLoan = new Map<string, number>()
           for (const m of (moraRes.data ?? []) as { loan_id: string; cuotas_mora: number | null }[]) {
@@ -352,7 +329,6 @@ export function CierreCaja({
             total: totalCartera || Number(r.cantidad_pagos ?? 0) + Number(r.cantidad_no_pagos ?? 0),
           },
           frecuencia,
-          cuotas,
           cartera,
         })
       } catch (err) {
@@ -570,9 +546,9 @@ export function CierreCaja({
       { type: "row", icon: CalendarClock,   iconColor: "text-icon-clock",      label: "Frec. Pago Quincenal",   value: `${data.frecuencia.quincenal.pagos}/${data.frecuencia.quincenal.total}` },
       { type: "row", icon: Coins,           iconColor: "text-icon-wallet",     label: "Frec. Pago Mensual",     value: `${data.frecuencia.mensual.pagos}/${data.frecuencia.mensual.total}` },
 
-      { type: "section", label: "Cuotas Vencidas por Cliente" },
-      { type: "row", icon: PiggyBank,       iconColor: "text-icon-sales",      label: "De 0 a 3 cuotas vencidas", value: `${data.cuotas.de0a3}` },
-      { type: "row", icon: Coins,           iconColor: "text-icon-wallet",     label: "Más de 3 cuotas vencidas", value: `${data.cuotas.de3oMas}` },
+      // "Cuotas Vencidas por Cliente" salió del cierre (02-oct-2026, a pedido
+      // del dueño): ni en la pantalla ni en el PDF ni en la imagen, que salen
+      // todos de estas mismas filas.
 
       { type: "section", label: "Estado de Cartera" },
       { type: "row", icon: Users,           iconColor: "text-status-al-dia",   label: "Clientes Al Día",        value: `${data.cartera.alDia}` },
