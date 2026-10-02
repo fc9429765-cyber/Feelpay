@@ -55,7 +55,6 @@ import {
   apodoSiAporta,
   type Gestion,
   cuotasConDecimal,
-  faltaParaCerrarCuota,
   fmtMoneda,
   mostrarMonto,
   leerMonto,
@@ -2912,24 +2911,10 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
       return dd && mm && yy ? `${dd}/${mm}/${yy}` : "-"
     }
 
-    // El conteo de cuotas y la mora salen de la MISMA consulta que trajo los
-    // totales, o sea del estado ya recalculado tras el pago.
-    //
-    // Antes se leían del objeto `client`, que es la foto que tenía la pantalla
-    // ANTES de cobrar: el recibo que se le entregaba al cliente decía "8/24" y
-    // "3 cuotas en mora" cuando acababa de pagar y ya iba en 9/24 con 2 de
-    // mora. Justo los dos números que el cliente revisa.
-    const cuotasCubiertas = finRow?.cuotas_cubiertas ?? client.cuotasPagadas
-    const cuotasTotales = finRow?.cuotas_totales ?? client.cuotasTotales
-    const moraActual = finRow?.cuotas_mora ?? client.mora
-    // La plata neta que lleva el crédito, de la misma consulta. Es el
-    // numerador del X/Y con decimal: `cuotas_cubiertas` viene con el piso ya
-    // puesto desde la vista y no sirve para sacarle la fracción.
-    const totalPagadoAhora = Number(finRow?.total_pagado ?? client.abonado) || 0
 
-    // ── LO QUE DICE EL COMPROBANTE, EN CUATRO BLOQUES ──────────────────────
-    // El formato que pidió el dueño: datos del cliente, el pago que se hizo,
-    // cómo va la cuota en curso y el resumen de la obligación. Cada bloque es
+    // ── LO QUE DICE EL COMPROBANTE, EN BLOQUES ─────────────────────────────
+    // El formato que pidió el dueño: datos del cliente, el pago que se hizo
+    // y el resumen de la obligación. Cada bloque es
     // una caja con su título, y lo que el cliente busca —cuánto pagó, cuánto
     // le falta de la cuota y cuánto debe— va en grande.
     type FilaRecibo = { label: string; valor: string; fuerte?: boolean; banda?: boolean }
@@ -2968,22 +2953,9 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
       })
     }
 
-    // RESTANTE = LO QUE FALTA PARA CERRAR LA CUOTA EN CURSO, y SOLO si falta
-    // algo: quien pagó la cuota completa no necesita un renglón que diga $0.
-    // "Cuotas 0.5 / 4" dice que falta un pedazo; "Restante $70.000" dice
-    // cuánto, que es con lo que el cliente tiene que llegar la próxima vez.
-    //
-    // Sin el sufijo "(+N extra)" en las cuotas: el X/Y es sobre las cuotas
-    // BASE del plan, que es lo que el cliente pactó.
-    const faltante = faltaParaCerrarCuota(totalPagadoAhora, client.valorCuota)
-    secciones.push({
-      titulo: "Cuota actual",
-      filas: [
-        { label: "Cuotas:", valor: `${cuotasConDecimal(totalPagadoAhora, client.valorCuota, cuotasTotales)} / ${cuotasTotales}` },
-        ...(faltante > 0 ? [{ label: "Restante:", valor: fmt(faltante), fuerte: true }] : []),
-        { label: "Frecuencia:", valor: frecuenciaLabel(client.frecuenciaPago) },
-      ],
-    })
+    // "CUOTA ACTUAL" SALIÓ DEL COMPROBANTE (02-oct-2026, a pedido del dueño):
+    // cuotas X/Y, restante y frecuencia. Quedan los datos del cliente, el
+    // pago, la renovación si la hubo y el resumen de la obligación.
 
     secciones.push({
       titulo: "Resumen de la obligación",
@@ -2998,8 +2970,6 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
         { label: "Saldo pendiente:", valor: fmt(saldo?.saldo_pendiente ?? client.saldo), fuerte: true, banda: true },
       ],
     })
-    // `moraActual` ya no se imprime: el formato nuevo no lleva la mora.
-    void moraActual
 
     // -- Dibujo ---------------------------------------------------------
     // Medidas en puntos lógicos y se escala x3 al pintar para que se vea
