@@ -276,15 +276,18 @@ export function AdminDashboard({ currentUserId, onVerResumenRutas }: AdminDashbo
       recaudo: number
       meta: number
       rutas: number
+      /** Cada ruta de ese país, para el detalle debajo de la tarjeta. */
+      detalle: { ruta: number; nombre: string; recaudo: number; meta: number }[]
     }>()
     for (const r of filteredRows) {
       const moneda = (r.moneda ?? "").trim().toUpperCase() || "—"
       const pais = capitalizarPais(r.pais, r.ciudad) || moneda
       const clave = moneda
-      const acc = m.get(clave) ?? { pais, moneda, recaudo: 0, meta: 0, rutas: 0 }
+      const acc = m.get(clave) ?? { pais, moneda, recaudo: 0, meta: 0, rutas: 0, detalle: [] }
       acc.recaudo += r.valor_pago
       acc.meta += r.meta_pagos
       acc.rutas += 1
+      acc.detalle.push({ ruta: r.ruta, nombre: r.ruta_nombre, recaudo: r.valor_pago, meta: r.meta_pagos })
       m.set(clave, acc)
     }
     return [...m.values()].sort((a, b) => a.pais.localeCompare(b.pais))
@@ -368,10 +371,14 @@ export function AdminDashboard({ currentUserId, onVerResumenRutas }: AdminDashbo
       </div>
 
       {/* ── Resumen multimoneda ──────────────────────────────────────────────
-          Una tarjeta por pais con SU plata y SU meta. Solo aparece cuando hay
-          mas de una moneda en juego: con una sola, seria repetir el total de
-          abajo con mas adornos. */}
-      {porPais.length > 1 && (
+          Una tarjeta por pais con SU plata y SU meta, y debajo CADA RUTA con
+          la suya.
+
+          SALE SIEMPRE, aunque haya una sola moneda. Antes solo aparecia con
+          dos o mas, y un administrador con todas sus rutas en un mismo pais
+          —GerenciaDV: 151, 196 y 205, las tres en pesos argentinos— se quedaba
+          sin el analisis, que era justo lo que buscaba. */}
+      {porPais.length > 0 && (
         <Card className="bg-card shadow-sm border-0">
           <CardContent className="px-3 py-2">
             <div className="mb-2">
@@ -423,6 +430,35 @@ export function AdminDashboard({ currentUserId, onVerResumenRutas }: AdminDashbo
                         {pct === null ? "sin meta" : `${pct}% de su meta`}
                       </span>
                     </div>
+
+                    {/* CADA RUTA DE ESE PAÍS: su recaudo contra su meta, en
+                        su moneda. Es el análisis "de cada ruta" que se pidió. */}
+                    <div className="mt-1.5 space-y-1 border-t border-border/60 pt-1.5">
+                      {[...p.detalle].sort((a, b) => a.ruta - b.ruta).map((d) => {
+                        const pr = d.meta > 0 ? Math.round((d.recaudo / d.meta) * 100) : null
+                        const tr =
+                          pr === null ? "bg-muted-foreground"
+                            : pr >= 90 ? "bg-success"
+                              : pr >= 60 ? "bg-warning"
+                                : "bg-destructive"
+                        return (
+                          <div key={d.ruta} className="flex items-center gap-1.5 text-[11px]">
+                            <span className="w-16 shrink-0 truncate font-semibold text-foreground" title={d.nombre}>
+                              {d.nombre}
+                            </span>
+                            <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                              <div className={`h-full rounded-full ${tr}`} style={{ width: `${Math.min(pr ?? 0, 100)}%` }} />
+                            </div>
+                            <span className="shrink-0 tabular-nums text-foreground">
+                              {formatearMoneda(d.recaudo, p.moneda)}
+                            </span>
+                            <span className="w-24 shrink-0 text-right tabular-nums text-muted-foreground">
+                              {pr === null ? "sin meta" : `${pr}% de ${formatearMoneda(d.meta, p.moneda)}`}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )
               })}
@@ -434,7 +470,8 @@ export function AdminDashboard({ currentUserId, onVerResumenRutas }: AdminDashbo
       {/* ── Equivalencia global en USD ───────────────────────────────────────
           La unica suma honesta entre paises: cada moneda pasa a dolares con
           la tasa de SU dia y despues se suman los dolares. */}
-      {porPais.length > 1 && globalUsd.total > 0 && (
+      {/* Con una sola moneda tambien sirve: dice cuanto es en dolares. */}
+      {porPais.length > 0 && globalUsd.total > 0 && (
         <Card className="border-0 bg-gradient-to-br from-sky-50 to-blue-50 shadow-sm dark:from-sky-950/40 dark:to-blue-950/40">
           <CardContent className="flex items-center gap-3 px-3 py-2.5">
             <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-blue-600/10">
