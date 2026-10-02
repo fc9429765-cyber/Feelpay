@@ -1,6 +1,6 @@
 "use client"
 
-import { Bell, User, Menu, PanelLeftClose, PanelLeft, MapPin, MapPinOff, Loader2, Users } from "lucide-react"
+import { Bell, User, Menu, PanelLeftClose, PanelLeft, MapPin, MapPinOff, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -14,7 +14,6 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar"
 import { OfflineIndicator } from "@/components/offline-indicator"
 import { useState, useEffect } from "react"
 import { useEstadoGps } from "@/lib/use-gps"
-import { useClientesAsignados } from "@/lib/use-clientes-asignados"
 import type { SelectedRuta } from "./route-selector"
 import type { AuthenticatedUser } from "./views/login-view"
 
@@ -36,11 +35,6 @@ interface HeaderProps {
    * su burbuja no se veía nunca sin abrir el menú.
    */
   moduleBadgeCounts?: Record<string, number>
-  /**
-   * Si viene, se muestra junto al nombre de la ruta cuántos clientes tiene
-   * asignados (con préstamo activo). Solo lo pide el Resumen del Día.
-   */
-  mostrarClientesAsignados?: boolean
 }
 
 export function Header({
@@ -54,7 +48,6 @@ export function Header({
   onLogout,
   onViewChange,
   moduleBadgeCounts,
-  mostrarClientesAsignados,
 }: HeaderProps) {
   const hayPendientes = Object.values(moduleBadgeCounts ?? {}).some((n) => n > 0)
   const [currentDateTime, setCurrentDateTime] = useState(new Date())
@@ -78,17 +71,6 @@ export function Header({
   const nombreruta = isGerencia ? "" : (selectedRuta?.nombre ?? "")
   const ciudad = isGerencia ? "" : (selectedRuta?.ciudad ?? "")
   const pais = isGerencia ? "" : (selectedRuta?.pais ?? "")
-  const clientesAsignados = useClientesAsignados(mostrarClientesAsignados && !isGerencia ? ruta : null)
-  // "👥 42": el número de clientes con préstamo activo en la ruta.
-  const chipClientes = mostrarClientesAsignados && clientesAsignados != null ? (
-    <span
-      className="inline-flex items-center gap-0.5 rounded-full bg-brand/10 px-1.5 py-px font-bold text-brand"
-      title={`${clientesAsignados} clientes asignados (con préstamo activo en la ruta)`}
-    >
-      <Users className="h-3 w-3" />
-      {clientesAsignados}
-    </span>
-  ) : null
 
   const formatDateTime = (date: Date) => {
     // FORMATO CORTO, PERO CON EL DIA DE LA SEMANA.
@@ -118,8 +100,10 @@ export function Header({
   const formattedDateTime = formatDateTime(currentDateTime)
 
   return (
-    <header className="flex h-12 md:h-16 items-center justify-between border-b border-border bg-card/80 backdrop-blur-md px-2 md:px-6">
-      <div className="flex items-center gap-1.5 md:gap-2">
+    <header className="flex h-12 md:h-16 items-center justify-between gap-1 border-b border-border bg-card/80 backdrop-blur-md px-2 md:px-6">
+      {/* `min-w-0`: en un teléfono chico el título cede y se recorta, en vez
+          de empujar la campana y la ubicación fuera de la pantalla. */}
+      <div className="flex min-w-0 items-center gap-1.5 md:gap-2">
         <Button variant="ghost" size="icon" className="md:hidden h-8 w-8 relative" onClick={onMenuClick}>
           <Menu className="h-4 w-4" />
           {hayPendientes && (
@@ -142,7 +126,6 @@ export function Header({
               <span className="font-semibold text-primary">Ruta: {ruta}</span>
               <span className="text-muted-foreground/50">•</span>
               <span className="font-semibold text-primary">{nombreruta}</span>
-              {chipClientes}
               {ciudad && (
                 <>
                   <span className="text-muted-foreground/50">•</span>
@@ -195,11 +178,10 @@ export function Header({
                   es el mismo todo el dia para quien esta cobrando, y el
                   numero ya va en el nombre de la unidad. Lo que queda es lo
                   que cambia y lo que se necesita: que unidad y que ciudad. */}
-              <span className="font-semibold text-primary text-[10px]">
+              <span className="max-w-[30vw] truncate whitespace-nowrap font-semibold text-primary text-[10px]">
                 {nombreruta}
                 {ciudad ? ` - ${ciudad}` : ""}
               </span>
-              {chipClientes}
               {onChangeRuta && (
                 <button
                   type="button"

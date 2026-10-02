@@ -136,8 +136,6 @@ export function DashboardLayout({
           onLogout={onLogout}
           onViewChange={onViewChange}
           moduleBadgeCounts={moduleBadgeCounts}
-          // Los clientes asignados van junto a la ruta en el Resumen del Día.
-          mostrarClientesAsignados={currentView === "daily-summary"}
         />
         {/* `min-h-0` para que el contenido pueda encogerse dentro del flex;
             sin eso un hijo alto empuja el pie fuera del contenedor.

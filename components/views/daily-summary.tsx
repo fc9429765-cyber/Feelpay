@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
  import { createClient } from "@/lib/supabase/client"
 import { getResumenDia } from "@/lib/resumen-dia"
 import { ResumenSemanal } from "@/components/resumen-semanal"
+import { useClientesAsignados } from "@/lib/use-clientes-asignados"
 import { todayColombia, bandaCartera, etiquetaFrecuencia, fmtMonedaCien, redondearCien } from "@/lib/gestion-core"
 import { getRutaUmbrales } from "@/lib/ruta-umbrales"
 import { aDolares, formatearMoneda } from "@/lib/monedas"
@@ -142,6 +143,7 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
   const [nombreUsuario, setNombreUsuario] = useState<string>("")
   const [rolUsuario, setRolUsuario] = useState<string>("Cobrador")
   const [paisRuta, setPaisRuta] = useState<string>("")
+  const clientesAsignados = useClientesAsignados(rutaId)
   const [ciudadRuta, setCiudadRuta] = useState<string>("")
   const [tasaDelDia, setTasaDelDia] = useState<number | null>(null)
   const [cargandoTasa, setCargandoTasa] = useState(false)
@@ -1070,6 +1072,18 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
                   <p className="flex items-center gap-1 text-[11px] leading-tight text-brand-foreground/80">
                     <MapPin className="h-3 w-3 shrink-0" />
                     <span className="truncate">{capitalizar(ciudadRuta)}</span>
+                  </p>
+                )}
+                {/* CLIENTES ASIGNADOS: los que tienen préstamo ACTIVO en la
+                    ruta, contados en el momento (lib/use-clientes-asignados).
+                    Va acá, en el saludo, y no en la barra de arriba: ahí era
+                    una pastilla chica que nadie veía. */}
+                {clientesAsignados != null && (
+                  <p className="mt-0.5 flex items-center gap-1 text-xs font-bold leading-tight">
+                    <Users className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">
+                      {clientesAsignados} {clientesAsignados === 1 ? "cliente" : "clientes"}
+                    </span>
                   </p>
                 )}
               </div>
