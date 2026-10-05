@@ -3,39 +3,51 @@
 /**
  * Movimientos en Revisión
  * -----------------------
- * Bandeja de secretaría. No es solo "lo que me toca aprobar": muestra TODO
- * lo registrado y en qué punto va cada cosa, porque antes un movimiento que
- * quedaba esperando al admin desaparecía de su vista y nadie sabía por qué
- * no avanzaba (había gastos detenidos siete meses sin que nada lo gritara).
+ * LA BANDEJA ÚNICA DE APROBACIONES (diseño de PROMPT_Movimientos_Revision.md,
+ * MovimientosRevision.jsx). Desde el 05-oct-2026 reemplaza también a
+ * "Autorizaciones Admin" y "Autorizaciones Secretaria": todo lo que espera un
+ * visto bueno está acá, y cada rol aprueba su paso.
  *
- * Se juntan dos fuentes que hoy conviven en la app:
+ * Se juntan las dos fuentes que conviven en la app:
  *
- *   · `solicitudes_revision` — lo que superó el UMBRAL DE LA RUTA. Aquí caen
- *     gastos, ventas y abonos, y los aprueba secretaría.
- *   · `gastosregistros` — la cadena vieja, por el LÍMITE DEL ÍTEM: primero
- *     el admin y después secretaría. Solo gastos, ingresos y retiros; las
- *     ventas y los abonos nunca pasan por el admin.
+ *   · `solicitudes_revision` — lo que superó el UMBRAL DE LA RUTA: ventas
+ *     grandes (nuevas y renovaciones), abonos (pagos en revisión del libro) y
+ *     gastos/ingresos/retiros. Las aprueba secretaría o el admin.
+ *   · `gastosregistros` — la cadena por el LÍMITE DEL ÍTEM: primero el admin y
+ *     después secretaría. Solo gastos, ingresos y retiros.
+ *
+ * Muestra lo pendiente (de cualquier fecha) y lo resuelto de los últimos 60
+ * días, para ver en qué terminó cada cosa. Pendiente primero (lo más viejo
+ * arriba), después lo resuelto (lo más reciente arriba), de a 50 por página.
+ *
+ * QUIÉN APRUEBA QUÉ
+ *   · Esperando al admin (cadena por ítem): el admin lo aprueba como admin;
+ *     secretaría puede hacerlo "en lugar del admin", con confirmación aparte,
+ *     y queda marcado así en `adminaprobo`.
+ *   · Esperando a secretaría y solicitudes por umbral: secretaría o admin.
+ *
+ * Las evidencias: la foto del gasto, el comprobante / la cédula / el local de
+ * la venta, y la foto del pago (`gestiones.detalle.foto_url`, script 125).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { callRpcAtomic, getSessionIdentity } from "@/lib/api-helper"
 import { getSolicitanteNombre } from "@/lib/ruta-umbrales"
 import { saveTransaction } from "@/lib/actions/save-transaction"
 import { approveTransaction } from "@/lib/actions/approve-transaction"
 import { approveTransactionSecretary } from "@/lib/actions/approve-transaction-secretary"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { formatearMoneda } from "@/lib/monedas"
 import { useToast } from "@/hooks/use-toast"
-import { Loader2, ShieldCheck, CheckCircle2, XCircle, Wallet, ShoppingBag, HandCoins, Clock, AlertTriangle } from "lucide-react"
+import {
+  AlertTriangle, BarChart3, Camera, Check, ChevronDown, Clock, Eye, List, Loader2, RefreshCw, X,
+} from "lucide-react"
+import "./movimientos-revision.css"
 
 type Tipo = "gasto" | "venta" | "abono"
-
 /** En qué punto del circuito está el movimiento. */
 type EstadoBandeja = "pendiente_mio" | "espera_admin" | "aprobado" | "rechazado"
+type Aprobacion = "pendiente" | "aprobado" | "rechazado"
 
 interface Solicitud {
   id: string
@@ -47,6 +59,9 @@ interface Solicitud {
   descripcion: string | null
   payload: Record<string, unknown>
   estado: string
+  revisado_por_nombre: string | null
+  revisado_at: string | null
+  motivo_rechazo: string | null
   created_at: string
 }
 
@@ -56,688 +71,796 @@ interface MovimientoCaja {
   tipo: string
   concepto: string
   valor: number
+  limite: number | null
   observacion: string | null
+  foto: string | null
+  adminid: number | null
   estadoadmin: string
   estadosecre: string
   adminaprobo: string | null
   secretariaaprobo: string | null
   fechahorasol: string
+  fechahoraaproboadm: string | null
+  fechahoraaprobosecretaria: string | null
 }
+
+interface GestionRevision {
+  id: string
+  loan_id: string | null
+  tipo: string
+  num_cuotas: number | null
+  observacion: string | null
+  motivo_revision: string | null
+  detalle: Record<string, unknown> | null
+}
+
+interface Foto { url: string; label: string }
 
 /** Fila normalizada de la bandeja, venga de donde venga. */
 interface ItemBandeja {
-  /** Prefijado por origen para no chocar entre las dos tablas. */
   key: string
   origen: "revision" | "caja"
   tipo: Tipo
+  /** Lo que dice la columna del evento: Pago, Venta, Gasto, Ingreso, Retiro. */
+  etiqueta: string
   rutaId: number
-  titulo: string
-  subtitulo: string | null
+  solicitante: string
   monto: number
-  quien: string | null
+  estatus: string
+  cuotas: number | null
+  mora: number | null
+  observacion: string
+  fotos: Foto[]
   fecha: string
   estado: EstadoBandeja
+  aprobacion: Aprobacion
+  /** Cuándo se resolvió (o se pidió, si sigue pendiente). */
+  fechaAprobacion: string
+  /** Renglones extra para el detalle. */
+  detalle: [string, string][]
   solicitud?: Solicitud
   movimiento?: MovimientoCaja
 }
 
-const TIPO_LABEL: Record<Tipo, string> = { gasto: "Gastos", venta: "Ventas", abono: "Abonos" }
-const TIPO_ICON: Record<Tipo, typeof Wallet> = { gasto: Wallet, venta: ShoppingBag, abono: HandCoins }
+const VENTANA_DIAS = 60
+const POR_PAGINA = 50
+const ROLES_ADMIN = new Set(["admin", "administrador"])
 
-const ESTADO_META: Record<EstadoBandeja, { label: string; clase: string }> = {
-  pendiente_mio: { label: "Te toca aprobar", clase: "bg-amber-100 text-amber-800 border-amber-200" },
-  espera_admin:  { label: "Esperando al admin", clase: "bg-sky-100 text-sky-800 border-sky-200" },
-  aprobado:      { label: "Aprobado", clase: "bg-green-100 text-green-800 border-green-200" },
-  rechazado:     { label: "Rechazado", clase: "bg-red-100 text-red-800 border-red-200" },
+const TIPO_META: Record<Tipo, { bg: string; color: string; glyph?: string }> = {
+  abono: { bg: "#0f9f8a", color: "#0f8a74", glyph: "$" },
+  venta: { bg: "#1f8ef1", color: "#1f6fe0" },
+  gasto: { bg: "#ec2027", color: "#d1191f", glyph: "$" },
+}
+const ESTATUS_COLOR: Record<string, string> = {
+  "Canceló": "#e11d24", "Reconsiderando": "#e11d24", "Rechazado": "#e11d24",
+  "Aprobado": "#16a34a", "Nuevo": "#16a34a", "Bajo": "#5a8a1f",
+  "Espera admin": "#e8590c", "Espera secretaría": "#e8590c",
+}
+const AP_META: Record<Aprobacion, { label: string; bg: string; color: string }> = {
+  pendiente: { label: "Pendiente", bg: "#fdeedd", color: "#e8590c" },
+  aprobado: { label: "Aprobado", bg: "#def5ee", color: "#0f9f8a" },
+  rechazado: { label: "Rechazado", bg: "#fde4e4", color: "#e11d24" },
 }
 
-function formatMonto(n: number): string {
-  return `$${Math.round(n).toLocaleString("es-CO")}`
+const D = "–"
+const fmtFecha = (iso: string) =>
+  new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "2-digit", month: "2-digit", year: "numeric" })
+    .format(new Date(iso)).replace(/\//g, "-")
+const fmtHora = (iso: string) =>
+  new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit", hour12: true })
+    .format(new Date(iso))
+const diasEsperando = (iso: string) => Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
+
+const Circle = ({ size, bg, color = "#fff", children }: { size: number; bg: string; color?: string; children: React.ReactNode }) => (
+  <span className="mr-circle" style={{ width: size, height: size, background: bg, color, fontSize: size * 0.52 }}>{children}</span>
+)
+const TypeIcon = ({ tipo, size = 42 }: { tipo: Tipo; size?: number }) => {
+  const t = TIPO_META[tipo]
+  return <Circle size={size} bg={t.bg}>{t.glyph ?? <BarChart3 size={22} strokeWidth={2.6} />}</Circle>
+}
+function ApIcon({ ap }: { ap: Aprobacion }) {
+  if (ap === "aprobado") return <Circle size={30} bg="#0f9f8a"><Check size={18} strokeWidth={3} /></Circle>
+  if (ap === "rechazado") return <Circle size={30} bg="#ec2027"><X size={18} strokeWidth={3} /></Circle>
+  return <Clock size={30} color="#e8590c" strokeWidth={1.8} />
 }
 
-function formatFecha(iso: string): string {
-  return new Date(iso).toLocaleString("es-CO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
-}
+type Chip = "todas" | "venta" | "abono" | "gasto" | "aprob"
+const CHIPS: { id: Chip; label: string; icon: React.ReactNode; iconBg: string; iconColor?: string; bg: string }[] = [
+  { id: "todas", label: "Todas", icon: <List size={24} strokeWidth={2.2} />, iconBg: "transparent", iconColor: "#1736b8", bg: "#fff" },
+  { id: "venta", label: "Ventas", icon: <BarChart3 size={24} strokeWidth={2.4} />, iconBg: "transparent", iconColor: "#1f8ef1", bg: "#eef4fb" },
+  { id: "abono", label: "Abonos", icon: "$", iconBg: "#0f9f8a", bg: "#eef4fb" },
+  { id: "gasto", label: "Gastos", icon: "$", iconBg: "#ec2027", bg: "#fde6ea" },
+  { id: "aprob", label: "Aprob Admin", icon: <Check size={22} strokeWidth={2.6} />, iconBg: "#c07ef2", bg: "#f2ecfb" },
+]
 
-/** Dias que lleva esperando un movimiento. */
-function diasEsperando(iso: string): number {
-  return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
-}
+interface RutaInfo { id: number; nombre: string; ciudad: string | null; pais: string | null; moneda: string | null }
+const TODOS = "__todos"
 
 export function MovimientosRevision() {
   const { toast } = useToast()
-  const [activeTab, setActiveTab] = useState<Tipo>("gasto")
-  // La pestaña inicial se elige UNA vez, cuando llegan los datos, hacia la
-  // primera que tenga pendientes. Antes arrancaba fija en "Gastos": con 7
-  // ventas esperando en la pestaña de al lado, quien abría la bandeja veía
-  // "Gastos" vacío y se iba creyendo que no había nada por aprobar.
-  const tabElegidaRef = useRef(false)
+  const rol = (getSessionIdentity().rol ?? "").toLowerCase()
+  const esAdmin = ROLES_ADMIN.has(rol)
+
   const [solicitudes, setSolicitudes] = useState<Solicitud[]>([])
   const [movimientos, setMovimientos] = useState<MovimientoCaja[]>([])
+  const [gestiones, setGestiones] = useState<Map<string, GestionRevision>>(new Map())
+  const [moraPorLoan, setMoraPorLoan] = useState<Map<string, number>>(new Map())
+  const [usuarios, setUsuarios] = useState<Map<number, string>>(new Map())
+  const [rutas, setRutas] = useState<Map<number, RutaInfo>>(new Map())
+  const [adminsPorRuta, setAdminsPorRuta] = useState<Map<number, string[]>>(new Map())
   const [loading, setLoading] = useState(true)
-  const [actionLoadingKey, setActionLoadingKey] = useState<string | null>(null)
-  const [rejectTarget, setRejectTarget] = useState<ItemBandeja | null>(null)
-  const [motivo, setMotivo] = useState("")
-  // Confirmacion aparte para cuando secretaria resuelve algo que le tocaba
-  // al admin: salta un control y conviene que sea un acto deliberado.
-  const [overrideTarget, setOverrideTarget] = useState<ItemBandeja | null>(null)
 
-  // La bandeja es de TODAS las rutas a proposito: secretaria atiende varias y
-  // filtrarla a la ruta seleccionada le esconderia el resto sin avisarle.
-  const [rutas, setRutas] = useState<Map<number, string>>(new Map())
-  const [rutaFiltro, setRutaFiltro] = useState<number | "todas">("todas")
-  const [estadoFiltro, setEstadoFiltro] = useState<EstadoBandeja | "todos">("pendiente_mio")
-
-  // Seleccion para aprobar en lote. Aprobar veinte gastos de alimentacion
-  // uno por uno era el trabajo diario de secretaria.
+  const [chip, setChip] = useState<Chip>("todas")
+  const [filtros, setFiltros] = useState({ pais: TODOS, ciudad: TODOS, admin: TODOS, unid: TODOS })
+  const [pagina, setPagina] = useState(0)
   const [seleccion, setSeleccion] = useState<Set<string>>(new Set())
   const [aprobandoLote, setAprobandoLote] = useState(false)
+  const [actionKey, setActionKey] = useState<string | null>(null)
 
+  const [detalle, setDetalle] = useState<ItemBandeja | null>(null)
+  const [rechazo, setRechazo] = useState<ItemBandeja | null>(null)
+  const [motivo, setMotivo] = useState("")
+  const [enLugarDelAdmin, setEnLugarDelAdmin] = useState<ItemBandeja | null>(null)
+
+  // ── Carga ──────────────────────────────────────────────────────────────
   const fetchTodo = useCallback(async () => {
     setLoading(true)
     try {
-      const supabase = createClient()
-      const [{ data: solData, error }, { data: cajaData }, { data: rutasData }] = await Promise.all([
-        supabase
-          .from("solicitudes_revision")
-          .select("*")
+      const sb = createClient()
+      const desde = new Date(Date.now() - VENTANA_DIAS * 86_400_000).toISOString()
+      const colsCaja =
+        "id, ruta, tipo, concepto, valor, limite, observacion, foto, adminid, estadoadmin, estadosecre, " +
+        "adminaprobo, secretariaaprobo, fechahorasol, fechahoraaproboadm, fechahoraaprobosecretaria"
+      const [rSol, rCajaAdm, rCajaSec, rCajaRes, rRutas, rAsig] = await Promise.all([
+        sb.from("solicitudes_revision").select("*")
+          .or(`estado.eq.pendiente,created_at.gte.${desde}`)
           .order("created_at", { ascending: true }),
-        // Solo los movimientos que pasaron por algun control. Los que nunca
-        // necesitaron aprobacion (estadoadmin y estadosecre en 'NA') no
-        // pertenecen a una bandeja de revision y solo harian ruido.
-        supabase
-          .from("gastosregistros")
-          .select("id, ruta, tipo, concepto, valor, observacion, estadoadmin, estadosecre, adminaprobo, secretariaaprobo, fechahorasol")
-          .or("estadoadmin.neq.NA,estadosecre.neq.NA")
-          .order("fechahorasol", { ascending: false })
-          .limit(300),
-        supabase.from("rutas").select("id, nombre").order("id"),
+        sb.from("gastosregistros").select(colsCaja).eq("estadoadmin", "por aprobar"),
+        sb.from("gastosregistros").select(colsCaja).eq("estadosecre", "por aprobar"),
+        sb.from("gastosregistros").select(colsCaja)
+          .or("estadoadmin.neq.NA,estadosecre.neq.NA").gte("fechahorasol", desde)
+          .order("fechahorasol", { ascending: false }).limit(1000),
+        sb.from("rutas").select("id, nombre, ciudad, pais, moneda").order("id"),
+        sb.from("usuario_rutas").select("ruta_id, usuarios!inner(nombre, rol, activo)").in("usuarios.rol", ["admin", "administrador"]),
       ])
-      if (error) throw error
-      setSolicitudes((solData ?? []) as Solicitud[])
-      setMovimientos((cajaData ?? []) as MovimientoCaja[])
-      setRutas(new Map(((rutasData ?? []) as { id: number; nombre: string }[]).map((r) => [r.id, r.nombre])))
+      if (rSol.error) throw rSol.error
+
+      const sols = (rSol.data ?? []) as Solicitud[]
+      const caja = new Map<number, MovimientoCaja>()
+      for (const r of [rCajaAdm, rCajaSec, rCajaRes]) {
+        for (const m of (r.data ?? []) as unknown as MovimientoCaja[]) caja.set(m.id, m)
+      }
+
+      // Los pagos en revisión: su gestión trae cuotas, nota, foto y préstamo.
+      const gIds = sols
+        .filter((s) => s.tipo === "abono")
+        .map((s) => String((s.payload as { gestion_id?: string }).gestion_id ?? ""))
+        .filter(Boolean)
+      const gMap = new Map<string, GestionRevision>()
+      for (let i = 0; i < gIds.length; i += 150) {
+        const { data } = await sb.from("gestiones")
+          .select("id, loan_id, tipo, num_cuotas, observacion, motivo_revision, detalle")
+          .in("id", gIds.slice(i, i + 150))
+        for (const g of (data ?? []) as GestionRevision[]) gMap.set(g.id, g)
+      }
+      const loanIds = [...new Set([...gMap.values()].map((g) => g.loan_id).filter((x): x is string => !!x))]
+      const mora = new Map<string, number>()
+      for (let i = 0; i < loanIds.length; i += 150) {
+        const { data } = await sb.from("v_loan_financiero").select("loan_id, cuotas_mora").in("loan_id", loanIds.slice(i, i + 150))
+        for (const f of (data ?? []) as { loan_id: string; cuotas_mora: number | null }[]) mora.set(f.loan_id, Number(f.cuotas_mora) || 0)
+      }
+
+      // Quién pidió el gasto de caja: `adminid` es un usuario (script 039).
+      const uIds = [...new Set([...caja.values()].map((m) => m.adminid).filter((x): x is number => x != null))]
+      const uMap = new Map<number, string>()
+      if (uIds.length) {
+        const { data } = await sb.from("usuarios").select("id, nombre").in("id", uIds)
+        for (const u of (data ?? []) as { id: number; nombre: string | null }[]) uMap.set(u.id, u.nombre ?? `#${u.id}`)
+      }
+
+      const admins = new Map<number, string[]>()
+      for (const a of (rAsig.data ?? []) as unknown as { ruta_id: number; usuarios: { nombre: string | null; activo: boolean | null } | null }[]) {
+        const n = a.usuarios?.nombre?.trim()
+        if (!n || a.usuarios?.activo === false) continue
+        const l = admins.get(Number(a.ruta_id)) ?? []
+        if (!l.includes(n)) l.push(n)
+        admins.set(Number(a.ruta_id), l)
+      }
+
+      setSolicitudes(sols)
+      setMovimientos([...caja.values()])
+      setGestiones(gMap)
+      setMoraPorLoan(mora)
+      setUsuarios(uMap)
+      setRutas(new Map(((rRutas.data ?? []) as RutaInfo[]).map((r) => [r.id, r])))
+      setAdminsPorRuta(admins)
     } catch (err) {
-      console.error("[v0] Error cargando la bandeja de revision:", err)
-      toast({
-        title: "Error",
-        description: "No se pudo cargar la bandeja de movimientos.",
-        variant: "destructive",
-      })
+      console.error("[v0] Error cargando la bandeja de revisión:", err)
+      toast({ title: "Error", description: "No se pudo cargar la bandeja de movimientos.", variant: "destructive" })
     } finally {
       setLoading(false)
     }
   }, [toast])
 
-  useEffect(() => { fetchTodo() }, [fetchTodo])
+  useEffect(() => { void fetchTodo() }, [fetchTodo])
 
-  const nombreRuta = useCallback(
-    (id: number) => rutas.get(id) ?? `Ruta ${id}`,
-    [rutas],
-  )
-
-  // ── Normalizacion de las dos fuentes ───────────────────────────────────
+  // ── Normalización de las dos fuentes ───────────────────────────────────
   const bandeja = useMemo<ItemBandeja[]>(() => {
     const desdeRevision: ItemBandeja[] = solicitudes
       // Un gasto aprobado ya existe como movimiento real en `gastosregistros`
-      // y desde ahi se ve su estado verdadero (puede seguir esperando al
-      // admin). Mostrar tambien la solicitud lo duplicaria, y ademas diria
-      // "aprobado" sobre plata que todavia no termina de pasar el circuito.
-      // Los rechazados si se conservan: esos nunca llegaron a ser movimiento.
+      // y desde ahí se ve su estado verdadero: mostrar la solicitud lo duplicaría.
       .filter((s) => !(s.tipo === "gasto" && s.estado === "aprobado"))
-      .map((s) => ({
-      key: `sr:${s.id}`,
-      origen: "revision",
-      tipo: s.tipo,
-      rutaId: s.ruta_id,
-      titulo: s.descripcion ?? TIPO_LABEL[s.tipo],
-      subtitulo: s.subtipo ? (s.subtipo === "nueva" ? "Nueva" : "Renovación") : null,
-      monto: Number(s.monto ?? 0),
-      quien: s.solicitado_por_nombre,
-      fecha: s.created_at,
-      estado:
-        s.estado === "pendiente" ? "pendiente_mio"
-        : s.estado === "rechazado" ? "rechazado"
-        : "aprobado",
-      solicitud: s,
-    }))
+      .map((s) => {
+        const p = s.payload ?? {}
+        const aprob: Aprobacion = s.estado === "pendiente" ? "pendiente" : s.estado === "rechazado" ? "rechazado" : "aprobado"
+        const base = {
+          key: `sr:${s.id}`,
+          origen: "revision" as const,
+          tipo: s.tipo,
+          rutaId: s.ruta_id,
+          solicitante: s.solicitado_por_nombre ?? D,
+          monto: Number(s.monto ?? 0),
+          fecha: s.created_at,
+          estado: (s.estado === "pendiente" ? "pendiente_mio" : aprob === "rechazado" ? "rechazado" : "aprobado") as EstadoBandeja,
+          aprobacion: aprob,
+          fechaAprobacion: s.revisado_at ?? s.created_at,
+          solicitud: s,
+        }
+        const resuelto: [string, string][] = s.estado === "pendiente" ? [] : [
+          ["Resuelto por", s.revisado_por_nombre ?? D],
+          ...(s.motivo_rechazo ? [["Motivo del rechazo", s.motivo_rechazo] as [string, string]] : []),
+        ]
+        if (s.tipo === "venta") {
+          const loan = (p.p_loan ?? {}) as Record<string, unknown>
+          const cli = (p.p_cliente ?? {}) as Record<string, unknown>
+          const fotos: Foto[] = [
+            ...(loan.comprobante_url ? [{ url: String(loan.comprobante_url), label: "Evidencia de entrega" }] : []),
+            ...(cli.cedula_image_url ? [{ url: String(cli.cedula_image_url), label: "Cédula" }] : []),
+            ...(cli.foto_local_url ? [{ url: String(cli.foto_local_url), label: "Local" }] : []),
+          ]
+          return {
+            ...base,
+            etiqueta: "Venta",
+            estatus: s.estado === "rechazado" ? "Rechazado" : s.subtipo === "renovacion" ? "Renovación" : "Nuevo",
+            cuotas: Number(loan.numero_cuotas) || null,
+            mora: null,
+            observacion: s.descripcion ?? "",
+            fotos,
+            detalle: [
+              ["Cuotas", loan.numero_cuotas ? `${loan.numero_cuotas} de ${loan.valor_cuota ?? D}` : D],
+              ["Interés", loan.tasa_interes != null ? `${loan.tasa_interes}%` : D],
+              ["Entrega", String(loan.tipo_venta ?? "efectivo")],
+              ...resuelto,
+            ],
+          }
+        }
+        if (s.tipo === "abono") {
+          const g = gestiones.get(String((p as { gestion_id?: string }).gestion_id ?? ""))
+          const foto = g?.detalle?.foto_url ? [{ url: String(g.detalle.foto_url), label: "Foto del pago" }] : []
+          return {
+            ...base,
+            etiqueta: "Pago",
+            estatus: s.estado === "rechazado" ? "Rechazado" : g?.tipo === "cancelacion" ? "Canceló" : s.estado === "pendiente" ? "Reconsiderando" : "Aprobado",
+            cuotas: g?.num_cuotas ?? null,
+            mora: g?.loan_id ? moraPorLoan.get(g.loan_id) ?? null : null,
+            observacion: [g?.motivo_revision, g?.observacion].filter(Boolean).join(" · ") || (s.descripcion ?? ""),
+            fotos: foto,
+            detalle: [["Detalle", s.descripcion ?? D], ...resuelto],
+          }
+        }
+        // Gasto / ingreso / retiro por el umbral de la ruta.
+        const tipoReal = String((p as { tipo?: string }).tipo ?? "Gasto")
+        return {
+          ...base,
+          etiqueta: tipoReal,
+          estatus: s.estado === "rechazado" ? "Rechazado" : "Espera secretaría",
+          cuotas: null,
+          mora: null,
+          observacion: [String((p as { concepto?: string }).concepto ?? ""), String((p as { observacion?: string }).observacion ?? "")].filter(Boolean).join(" · "),
+          fotos: (p as { foto?: string }).foto ? [{ url: String((p as { foto?: string }).foto), label: "Comprobante" }] : [],
+          detalle: [["Concepto", String((p as { concepto?: string }).concepto ?? D)], ...resuelto],
+        }
+      })
 
-    const desdeCaja: ItemBandeja[] = movimientos.map((m) => ({
-      key: `gr:${m.id}`,
-      origen: "caja",
-      // gastosregistros guarda Ingreso/Gasto/Retiro; en la bandeja los tres
-      // viven bajo la pestaña de gastos, que es el movimiento de caja.
-      tipo: "gasto",
-      rutaId: m.ruta,
-      titulo: `${m.tipo}: ${m.concepto}`,
-      subtitulo: m.observacion || null,
-      monto: Number(m.valor ?? 0),
-      quien: m.secretariaaprobo || m.adminaprobo || null,
-      fecha: m.fechahorasol,
-      estado:
+    const desdeCaja: ItemBandeja[] = movimientos.map((m) => {
+      const estado: EstadoBandeja =
         m.estadoadmin === "rechazado" || m.estadosecre === "rechazado" ? "rechazado"
         : m.estadoadmin === "por aprobar" ? "espera_admin"
         : m.estadosecre === "por aprobar" ? "pendiente_mio"
-        : "aprobado",
-      movimiento: m,
-    }))
+        : "aprobado"
+      const aprob: Aprobacion = estado === "rechazado" ? "rechazado" : estado === "aprobado" ? "aprobado" : "pendiente"
+      return {
+        key: `gr:${m.id}`,
+        origen: "caja",
+        tipo: "gasto",
+        etiqueta: m.tipo || "Gasto",
+        rutaId: m.ruta,
+        solicitante: (m.adminid != null ? usuarios.get(m.adminid) : null) ?? D,
+        monto: Number(m.valor ?? 0),
+        estatus:
+          estado === "espera_admin" ? "Espera admin"
+          : estado === "pendiente_mio" ? "Espera secretaría"
+          : estado === "rechazado" ? "Rechazado" : "Aprobado",
+        cuotas: null,
+        mora: null,
+        observacion: [m.concepto, m.observacion].filter(Boolean).join(" · "),
+        fotos: m.foto ? [{ url: m.foto, label: "Comprobante" }] : [],
+        fecha: m.fechahorasol,
+        estado,
+        aprobacion: aprob,
+        fechaAprobacion: m.fechahoraaprobosecretaria ?? m.fechahoraaproboadm ?? m.fechahorasol,
+        detalle: [
+          ["Concepto", m.concepto],
+          ["Límite del ítem", m.limite != null ? String(m.limite) : D],
+          ["Admin", m.adminaprobo ? `${m.estadoadmin} · ${m.adminaprobo}` : m.estadoadmin],
+          ["Secretaría", m.secretariaaprobo ? `${m.estadosecre} · ${m.secretariaaprobo}` : m.estadosecre],
+        ],
+        movimiento: m,
+      }
+    })
 
     return [...desdeRevision, ...desdeCaja].sort((a, b) => {
-      // Lo que necesita accion primero, y dentro de eso lo mas viejo arriba.
-      const pesoA = a.estado === "pendiente_mio" ? 0 : a.estado === "espera_admin" ? 1 : 2
-      const pesoB = b.estado === "pendiente_mio" ? 0 : b.estado === "espera_admin" ? 1 : 2
-      if (pesoA !== pesoB) return pesoA - pesoB
-      return pesoA === 2
-        ? b.fecha.localeCompare(a.fecha)   // resueltos: lo mas reciente arriba
-        : a.fecha.localeCompare(b.fecha)   // pendientes: lo mas viejo arriba
+      // Lo que necesita acción primero (lo más viejo arriba); después lo
+      // resuelto (lo más reciente arriba).
+      const pa = a.aprobacion === "pendiente" ? 0 : 1
+      const pb = b.aprobacion === "pendiente" ? 0 : 1
+      if (pa !== pb) return pa - pb
+      return pa === 0 ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha)
     })
-  }, [solicitudes, movimientos])
+  }, [solicitudes, movimientos, gestiones, moraPorLoan, usuarios])
 
-  const visibles = useMemo(
-    () => bandeja.filter((i) => (rutaFiltro === "todas" || i.rutaId === rutaFiltro)),
-    [bandeja, rutaFiltro],
-  )
-  const porEstado = useMemo(
-    () => visibles.filter((i) => estadoFiltro === "todos" || i.estado === estadoFiltro),
-    [visibles, estadoFiltro],
-  )
-  const filtered = useMemo(() => porEstado.filter((i) => i.tipo === activeTab), [porEstado, activeTab])
-
-  const counts = {
-    gasto: porEstado.filter((i) => i.tipo === "gasto").length,
-    venta: porEstado.filter((i) => i.tipo === "venta").length,
-    abono: porEstado.filter((i) => i.tipo === "abono").length,
-  }
-
-  // Al llegar los datos, abrir en la primera pestaña que tenga algo. Ventas
-  // primero: es plata prestada esperando el visto bueno, y es lo que hoy
-  // quedaba escondido.
-  useEffect(() => {
-    if (loading || tabElegidaRef.current) return
-    tabElegidaRef.current = true
-    const primera = (["venta", "abono", "gasto"] as Tipo[]).find((t) => counts[t] > 0)
-    if (primera && primera !== activeTab) setActiveTab(primera)
-    // Solo corre una vez, cuando termina la primera carga.
+  // ── Filtros ────────────────────────────────────────────────────────────
+  const ruta = (id: number) => rutas.get(id)
+  const opciones = useMemo(() => {
+    const ids = [...new Set(bandeja.map((i) => i.rutaId))]
+    const info = ids.map((id) => ruta(id)).filter((r): r is RutaInfo => !!r)
+    const uniq = (xs: (string | null | undefined)[]) => [...new Set(xs.map((x) => (x ?? "").trim()).filter(Boolean))].sort()
+    const pasaPais = (r: RutaInfo) => filtros.pais === TODOS || (r.pais ?? "").trim() === filtros.pais
+    const pasaCiudad = (r: RutaInfo) => filtros.ciudad === TODOS || (r.ciudad ?? "").trim() === filtros.ciudad
+    const pasaAdmin = (r: RutaInfo) => filtros.admin === TODOS || (adminsPorRuta.get(r.id) ?? []).includes(filtros.admin)
+    return {
+      pais: uniq(info.map((r) => r.pais)),
+      ciudad: uniq(info.filter(pasaPais).map((r) => r.ciudad)),
+      admin: uniq(info.filter((r) => pasaPais(r) && pasaCiudad(r)).flatMap((r) => adminsPorRuta.get(r.id) ?? [])),
+      unid: info.filter((r) => pasaPais(r) && pasaCiudad(r) && pasaAdmin(r)).sort((a, b) => a.id - b.id),
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading])
-  const rutasEnBandeja = Array.from(new Set(bandeja.map((i) => i.rutaId))).sort((a, b) => a - b)
+  }, [bandeja, rutas, adminsPorRuta, filtros])
 
-  /** Un item se puede resolver desde aquí. */
-  const esAccionable = (i: ItemBandeja) => i.estado === "pendiente_mio" || i.estado === "espera_admin"
+  const porFiltros = useMemo(() => bandeja.filter((i) => {
+    const r = ruta(i.rutaId)
+    if (filtros.unid !== TODOS) return String(i.rutaId) === filtros.unid
+    if (filtros.pais !== TODOS && (r?.pais ?? "").trim() !== filtros.pais) return false
+    if (filtros.ciudad !== TODOS && (r?.ciudad ?? "").trim() !== filtros.ciudad) return false
+    if (filtros.admin !== TODOS && !(adminsPorRuta.get(i.rutaId) ?? []).includes(filtros.admin)) return false
+    return true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [bandeja, filtros, rutas, adminsPorRuta])
 
-  // ── Aplicar una aprobación ─────────────────────────────────────────────
-  /**
-   * Aplica UN item. Lanza si algo falla, para que quien la llama decida si
-   * avisa o si sigue con el siguiente (aprobación en lote).
-   */
+  const conteos: Record<Chip, number> = {
+    todas: porFiltros.length,
+    venta: porFiltros.filter((i) => i.tipo === "venta").length,
+    abono: porFiltros.filter((i) => i.tipo === "abono").length,
+    gasto: porFiltros.filter((i) => i.tipo === "gasto").length,
+    aprob: porFiltros.filter((i) => i.aprobacion === "aprobado").length,
+  }
+  const filas = useMemo(
+    () => porFiltros.filter((i) => chip === "todas" || (chip === "aprob" ? i.aprobacion === "aprobado" : i.tipo === chip)),
+    [porFiltros, chip],
+  )
+  const paginas = Math.max(1, Math.ceil(filas.length / POR_PAGINA))
+  const pag = Math.min(pagina, paginas - 1)
+  const visibles = filas.slice(pag * POR_PAGINA, pag * POR_PAGINA + POR_PAGINA)
+  const pendientes = porFiltros.filter((i) => i.aprobacion === "pendiente").length
+
+  useEffect(() => { setPagina(0) }, [chip, filtros])
+
+  const cambiarFiltro = (k: keyof typeof filtros, v: string) =>
+    setFiltros((f) => {
+      // Al cambiar uno de arriba se sueltan los de abajo, que pueden no existir.
+      const orden: (keyof typeof filtros)[] = ["pais", "ciudad", "admin", "unid"]
+      const n = { ...f, [k]: v }
+      for (const x of orden.slice(orden.indexOf(k) + 1)) n[x] = TODOS
+      return n
+    })
+
+  // ── Acciones (la misma lógica de siempre) ──────────────────────────────
+  const accionable = (i: ItemBandeja) => i.estado === "pendiente_mio" || i.estado === "espera_admin"
+  /** Lo que se puede aprobar sin confirmación aparte. */
+  const directo = (i: ItemBandeja) => accionable(i) && !(i.estado === "espera_admin" && !esAdmin)
+
+  /** Aplica UN item. Lanza si algo falla. */
   const aprobarUno = async (i: ItemBandeja) => {
-    // --- Movimiento de caja de la cadena vieja -------------------------
+    const nombre = getSolicitanteNombre() ?? (esAdmin ? "Admin" : "Secretaría")
     if (i.origen === "caja" && i.movimiento) {
-      const nombre = getSolicitanteNombre() ?? "Secretaría"
       if (i.estado === "espera_admin") {
-        // Resolver en lugar del admin. Queda marcado en `adminaprobo` para
-        // que en la auditoría no se confunda con una aprobación del admin.
-        const r = await approveTransaction({
-          id: i.movimiento.id,
-          status: "aprobado",
-          adminName: nombre,
-          enLugarDelAdmin: true,
-        })
+        // El admin aprueba SU paso. Secretaría lo hace en lugar del admin y
+        // queda marcado así en `adminaprobo`, para la auditoría.
+        const r = await approveTransaction({ id: i.movimiento.id, status: "aprobado", adminName: nombre, enLugarDelAdmin: !esAdmin })
         if (!r.success) throw new Error(r.error ?? "No se pudo aprobar el movimiento")
       } else {
-        const r = await approveTransactionSecretary({
-          id: i.movimiento.id,
-          status: "aprobado",
-          secretaryName: nombre,
-        })
+        const r = await approveTransactionSecretary({ id: i.movimiento.id, status: "aprobado", secretaryName: nombre })
         if (!r.success) throw new Error(r.error ?? "No se pudo aprobar el movimiento")
       }
       return
     }
-
-    // --- Solicitud del umbral de ruta -----------------------------------
     const s = i.solicitud!
     if (s.tipo === "gasto") {
-      // Camino asimetrico: el gasto se aplica llamando saveTransaction()
-      // (server action existente, sin cambios porque sube fotos a Vercel
-      // Blob) en vez de resolverse dentro de una RPC.
-      //
-      // Por eso hay que RECLAMAR la solicitud antes de aplicarla. Antes se
-      // registraba el gasto primero y se marcaba la solicitud despues: si
-      // ese segundo paso fallaba, la solicitud seguia apareciendo y al
-      // aprobarla otra vez entraba un segundo gasto. Dos personas
-      // aprobando a la vez producian lo mismo. El `.eq("estado",
-      // "pendiente")` hace que solo una de las dos se lo lleve.
+      // Se RECLAMA la solicitud antes de aplicarla: el `.eq("estado",
+      // "pendiente")` hace que si dos personas aprueban a la vez, solo una
+      // se la lleve y el gasto no entre dos veces.
       const identity = getSessionIdentity()
-      const supabase = createClient()
-      const { data: reclamada, error: reclamoErr } = await supabase
+      const sb = createClient()
+      const { data: reclamada, error } = await sb
         .from("solicitudes_revision")
-        .update({ estado: "aprobado", revisado_por: identity.user_id, revisado_at: new Date().toISOString() })
-        .eq("id", s.id)
-        .eq("estado", "pendiente")
-        .select("id")
-      if (reclamoErr) throw reclamoErr
-      if (!reclamada || reclamada.length === 0) {
-        throw new Error("Este movimiento ya fue resuelto por otra persona")
-      }
-
-      // El id de la solicitud sirve de llave de idempotencia: aunque esto
-      // se reintente, el gasto entra una sola vez.
+        .update({ estado: "aprobado", revisado_por: identity.user_id, revisado_por_nombre: nombre, revisado_at: new Date().toISOString() })
+        .eq("id", s.id).eq("estado", "pendiente").select("id")
+      if (error) throw error
+      if (!reclamada || reclamada.length === 0) throw new Error("Este movimiento ya fue resuelto por otra persona")
       const result = await saveTransaction({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ...(s.payload as any),
         idempotencyKey: s.id,
-        aprobadoPorSecretaria: getSolicitanteNombre() ?? undefined,
+        aprobadoPorSecretaria: nombre,
       })
       if (!result.success) {
-        // Se devuelve a pendiente para que se pueda reintentar; si no,
-        // quedaria marcada como aprobada sin gasto registrado.
-        await supabase
-          .from("solicitudes_revision")
-          .update({ estado: "pendiente", revisado_por: null, revisado_at: null })
+        await sb.from("solicitudes_revision")
+          .update({ estado: "pendiente", revisado_por: null, revisado_por_nombre: null, revisado_at: null })
           .eq("id", s.id)
         throw new Error(result.error ?? "No se pudo registrar el gasto")
       }
     } else {
-      // venta / abono: RPC atomica, cascada incluida (crea el prestamo +
-      // plan de pagos, o aplica el abono, en una sola transaccion)
+      // Venta / abono: RPC atómica (crea el préstamo o aplica el pago).
       await callRpcAtomic("aprobar_solicitud_revision", { solicitud_id: s.id, decision: "aprobado" })
     }
   }
 
-  const quitarSeleccion = (key: string) => {
-    setSeleccion((prev) => {
-      const next = new Set(prev)
-      next.delete(key)
-      return next
-    })
-  }
-
-  const handleAprobar = async (i: ItemBandeja) => {
-    setActionLoadingKey(i.key)
+  const aprobar = async (i: ItemBandeja) => {
+    setActionKey(i.key)
     try {
       await aprobarUno(i)
-      quitarSeleccion(i.key)
-      toast({ title: i.estado === "espera_admin" ? "Aprobado en lugar del admin" : "Movimiento aprobado" })
+      setSeleccion((p) => { const n = new Set(p); n.delete(i.key); return n })
+      toast({ title: i.estado === "espera_admin" && !esAdmin ? "Aprobado en lugar del admin" : "Movimiento aprobado" })
+      setDetalle(null)
       await fetchTodo()
     } catch (err) {
       console.error("[v0] Error aprobando:", err)
-      toast({
-        title: "Error al aprobar",
-        description: err instanceof Error ? err.message : "No se pudo aprobar el movimiento",
-        variant: "destructive",
-      })
+      toast({ title: "Error al aprobar", description: err instanceof Error ? err.message : "No se pudo aprobar", variant: "destructive" })
     } finally {
-      setActionLoadingKey(null)
-      setOverrideTarget(null)
+      setActionKey(null)
+      setEnLugarDelAdmin(null)
     }
   }
+  const pedirAprobar = (i: ItemBandeja) => (directo(i) ? void aprobar(i) : setEnLugarDelAdmin(i))
 
-  /**
-   * Aprueba lo seleccionado, UNO A UNO y en serie.
-   *
-   * En serie a proposito: cada aprobacion escribe en loans/payment_plan o en
-   * gastosregistros, y lanzarlas en paralelo multiplicaria las carreras que
-   * justamente se acaban de cerrar. Si una falla, se sigue con las demas y al
-   * final se informa cuantas quedaron.
-   */
-  const handleAprobarLote = async () => {
-    const aAprobar = filtered.filter((i) => seleccion.has(i.key) && esAccionable(i))
-    if (aAprobar.length === 0) return
-    setAprobandoLote(true)
-    let ok = 0
-    const fallidas: string[] = []
-    for (const i of aAprobar) {
-      setActionLoadingKey(i.key)
-      try {
-        await aprobarUno(i)
-        quitarSeleccion(i.key)
-        ok += 1
-      } catch (err) {
-        console.error("[v0] Error aprobando en lote:", i.key, err)
-        fallidas.push(i.titulo)
-      }
-    }
-    setActionLoadingKey(null)
-    setAprobandoLote(false)
-    toast({
-      title: `${ok} de ${aAprobar.length} aprobados`,
-      description: fallidas.length > 0 ? `No se pudieron aprobar: ${fallidas.join(", ")}` : undefined,
-      variant: fallidas.length > 0 ? "destructive" : undefined,
-    })
-    await fetchTodo()
-  }
-
-  const handleRechazar = async () => {
-    if (!rejectTarget) return
-    const i = rejectTarget
-    setActionLoadingKey(i.key)
+  const rechazar = async () => {
+    if (!rechazo) return
+    const i = rechazo
+    setActionKey(i.key)
     try {
+      const nombre = getSolicitanteNombre() ?? (esAdmin ? "Admin" : "Secretaría")
       if (i.origen === "caja" && i.movimiento) {
-        const nombre = getSolicitanteNombre() ?? "Secretaría"
         const r = i.estado === "espera_admin"
-          ? await approveTransaction({ id: i.movimiento.id, status: "rechazado", adminName: nombre, enLugarDelAdmin: true })
+          ? await approveTransaction({ id: i.movimiento.id, status: "rechazado", adminName: nombre, enLugarDelAdmin: !esAdmin })
           : await approveTransactionSecretary({ id: i.movimiento.id, status: "rechazado", secretaryName: nombre })
-        if (!r.success) throw new Error(r.error ?? "No se pudo rechazar el movimiento")
+        if (!r.success) throw new Error(r.error ?? "No se pudo rechazar")
       } else if (i.solicitud?.tipo === "gasto") {
         const identity = getSessionIdentity()
-        const { error } = await createClient()
-          .from("solicitudes_revision")
+        const { error } = await createClient().from("solicitudes_revision")
           .update({
-            estado: "rechazado",
-            revisado_por: identity.user_id,
-            revisado_at: new Date().toISOString(),
-            motivo_rechazo: motivo || null,
+            estado: "rechazado", revisado_por: identity.user_id, revisado_por_nombre: nombre,
+            revisado_at: new Date().toISOString(), motivo_rechazo: motivo || null,
           })
-          .eq("id", i.solicitud.id)
-          .eq("estado", "pendiente")
+          .eq("id", i.solicitud.id).eq("estado", "pendiente")
         if (error) throw error
       } else if (i.solicitud) {
-        await callRpcAtomic("aprobar_solicitud_revision", {
-          solicitud_id: i.solicitud.id,
-          decision: "rechazado",
-          motivo_rechazo: motivo || null,
-        })
+        await callRpcAtomic("aprobar_solicitud_revision", { solicitud_id: i.solicitud.id, decision: "rechazado", motivo_rechazo: motivo || null })
       }
-      quitarSeleccion(i.key)
+      setSeleccion((p) => { const n = new Set(p); n.delete(i.key); return n })
       toast({ title: "Movimiento rechazado" })
+      setDetalle(null)
       await fetchTodo()
     } catch (err) {
       console.error("[v0] Error rechazando:", err)
-      toast({
-        title: "Error al rechazar",
-        description: err instanceof Error ? err.message : "No se pudo rechazar el movimiento",
-        variant: "destructive",
-      })
+      toast({ title: "Error al rechazar", description: err instanceof Error ? err.message : "No se pudo rechazar", variant: "destructive" })
     } finally {
-      setActionLoadingKey(null)
-      setRejectTarget(null)
+      setActionKey(null)
+      setRechazo(null)
       setMotivo("")
     }
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────
-  const chipsEstado: { key: EstadoBandeja | "todos"; label: string }[] = [
-    { key: "pendiente_mio", label: "Te toca aprobar" },
-    { key: "espera_admin", label: "Esperando al admin" },
-    { key: "aprobado", label: "Aprobados" },
-    { key: "rechazado", label: "Rechazados" },
-    { key: "todos", label: "Todos" },
-  ]
+  /** Aprueba lo seleccionado, en serie (cada uno escribe plata o préstamos). */
+  const aprobarLote = async () => {
+    const lista = filas.filter((i) => seleccion.has(i.key) && directo(i))
+    if (!lista.length) return
+    setAprobandoLote(true)
+    let ok = 0
+    const fallidas: string[] = []
+    for (const i of lista) {
+      setActionKey(i.key)
+      try { await aprobarUno(i); ok += 1 } catch (err) {
+        console.error("[v0] Error aprobando en lote:", i.key, err)
+        fallidas.push(`${i.etiqueta} ${formatearMoneda(i.monto, ruta(i.rutaId)?.moneda)}`)
+      }
+    }
+    setActionKey(null)
+    setAprobandoLote(false)
+    setSeleccion(new Set())
+    toast({
+      title: `${ok} de ${lista.length} aprobados`,
+      description: fallidas.length ? `No se pudieron aprobar: ${fallidas.join(", ")}` : undefined,
+      variant: fallidas.length ? "destructive" : undefined,
+    })
+    await fetchTodo()
+  }
 
-  const pendientesDeAccion = visibles.filter((i) => esAccionable(i))
-  const masViejo = pendientesDeAccion.reduce<number>((max, i) => Math.max(max, diasEsperando(i.fecha)), 0)
+  // ── Render ─────────────────────────────────────────────────────────────
+  const seleccionables = visibles.filter(directo)
+  const todosMarcados = seleccionables.length > 0 && seleccionables.every((i) => seleccion.has(i.key))
+  const marcarTodos = () =>
+    setSeleccion((p) => {
+      const n = new Set(p)
+      for (const i of seleccionables) (todosMarcados ? n.delete(i.key) : n.add(i.key))
+      return n
+    })
+  const enLote = filas.filter((i) => seleccion.has(i.key) && directo(i)).length
+  const plata = (i: ItemBandeja) => formatearMoneda(i.monto, ruta(i.rutaId)?.moneda)
+  const ahora = new Date()
+  const fechaCabecera = new Intl.DateTimeFormat("es-CO", {
+    timeZone: "America/Bogota", weekday: "short", day: "2-digit", month: "2-digit", year: "2-digit",
+  }).format(ahora).replace(".", "") + " - " + fmtHora(ahora.toISOString())
+
+  const HEAD: React.ReactNode[] = [
+    "Ícono / Evento", "Núm. / Unidad", "Solicitante", "Valor", "Estatus", "Cuotas", "Mora", "Observación",
+    <>Adjuntos /<br />Evidencia</>, "Acciones", "Fecha y hora", <>Aprobación<br />Administrativa</>,
+  ]
+  const FIELDS: [keyof typeof filtros, string][] = [["pais", "País"], ["ciudad", "Ciudad"], ["admin", "Admin"], ["unid", "Unid"]]
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white ring-1 ring-border overflow-hidden p-0.5">
+    <div className="mr-root">
+      <div className="mr-frame">
+        <header className="mr-head">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/opad-logo.png" alt="OPAD" className="h-full w-full object-contain" />
-        </div>
-        <div>
-          <h2 className="text-base md:text-lg font-bold leading-tight">Movimientos en Revisión</h2>
-          <p className="text-[11px] text-muted-foreground">Gastos, ventas y abonos, y en qué punto va cada uno</p>
-        </div>
-      </div>
-
-      {/* Aviso de antiguedad: sin esto los movimientos se quedaban meses sin
-          que nada lo gritara. */}
-      {pendientesDeAccion.length > 0 && masViejo >= 3 && (
-        <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
-          masViejo >= 15 ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-800"
-        }`}>
-          <Clock className="h-4 w-4 shrink-0" />
-          <span>
-            Hay <strong>{pendientesDeAccion.length}</strong> movimiento{pendientesDeAccion.length !== 1 ? "s" : ""} sin resolver.
-            El más antiguo lleva <strong>{masViejo} días</strong> esperando.
-          </span>
-        </div>
-      )}
-
-      {/* Filtro por estado */}
-      <div className="flex flex-wrap gap-1.5">
-        {chipsEstado.map((c) => {
-          const n = c.key === "todos" ? visibles.length : visibles.filter((i) => i.estado === c.key).length
-          return (
-            <button
-              key={c.key}
-              type="button"
-              onClick={() => { setEstadoFiltro(c.key); setSeleccion(new Set()) }}
-              className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
-                estadoFiltro === c.key ? "border-brand bg-brand/10 font-semibold" : "hover:bg-muted/50"
-              }`}
-            >
-              {c.label} ({n})
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Filtro por ruta */}
-      {rutasEnBandeja.length > 1 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[11px] text-muted-foreground mr-1">Ruta:</span>
-          <button
-            type="button"
-            onClick={() => setRutaFiltro("todas")}
-            className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
-              rutaFiltro === "todas" ? "border-brand bg-brand/10 font-semibold" : "hover:bg-muted/50"
-            }`}
-          >
-            Todas
-          </button>
-          {rutasEnBandeja.map((id) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setRutaFiltro(id)}
-              className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
-                rutaFiltro === id ? "border-brand bg-brand/10 font-semibold" : "hover:bg-muted/50"
-              }`}
-            >
-              {nombreRuta(id)}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Tipo)}>
-        <TabsList className="grid w-full max-w-md grid-cols-3">
-          {(["gasto", "venta", "abono"] as Tipo[]).map((t) => (
-            <TabsTrigger key={t} value={t} className="text-xs md:text-sm">
-              {TIPO_LABEL[t]} ({counts[t]})
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        <TabsContent value={activeTab} className="mt-4">
-          {loading ? (
-            <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-muted-foreground">
-              <ShieldCheck className="h-8 w-8 opacity-30" />
-              <p className="text-sm">
-                {estadoFiltro === "espera_admin" && activeTab !== "gasto"
-                  ? "Las ventas y los abonos no pasan por el admin: los aprueba secretaría."
-                  : "Sin movimientos con estos filtros"}
-              </p>
+          <img className="mr-logo" src="/opad-logo.png" alt="OPAD" />
+          <div className="mr-divider" />
+          <div>
+            <h1 className="mr-h1">Movimientos en Revisión</h1>
+            <div className="mr-h1-sub">
+              Gastos, ventas y abonos, y en qué punto va cada uno
+              {pendientes > 0 && <b style={{ color: "#e8590c" }}> · {pendientes} por aprobar</b>}
             </div>
-          ) : (
-            <div className="space-y-2">
-              {/* Aprobacion en lote: solo sobre lo que se puede resolver */}
-              {filtered.some((i) => esAccionable(i)) && (
-                <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/30 px-3 py-2">
-                  <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 accent-current"
-                      checked={filtered.filter(esAccionable).every((i) => seleccion.has(i.key))}
-                      onChange={(e) => {
-                        const marcar = e.target.checked
-                        setSeleccion((prev) => {
-                          const next = new Set(prev)
-                          filtered.filter(esAccionable).forEach((i) => (marcar ? next.add(i.key) : next.delete(i.key)))
-                          return next
-                        })
-                      }}
-                    />
-                    Seleccionar todo ({filtered.filter(esAccionable).length})
-                  </label>
-                  {filtered.some((i) => seleccion.has(i.key)) && (
-                    <Button size="sm" className="h-7 gap-1.5 text-xs" disabled={aprobandoLote} onClick={handleAprobarLote}>
-                      {aprobandoLote ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                      Aprobar {filtered.filter((i) => seleccion.has(i.key) && esAccionable(i)).length}
-                    </Button>
-                  )}
-                </div>
-              )}
+          </div>
+          <div className="mr-head-right">
+            <span className="mr-date">{fechaCabecera}</span>
+            <button type="button" className="mr-refresh" onClick={() => void fetchTodo()} disabled={loading}>
+              <RefreshCw size={18} className={loading ? "animate-spin" : ""} /> Actualizar
+            </button>
+          </div>
+        </header>
 
-              {filtered.map((i) => {
-                const Icon = TIPO_ICON[i.tipo]
-                const busy = actionLoadingKey === i.key
-                const meta = ESTADO_META[i.estado]
+        <div className="mr-body">
+          <div className="mr-filters">
+            {FIELDS.map(([k, label]) => (
+              <label key={k} className="mr-filter">
+                <span>{label}</span>
+                <select className="mr-select" value={filtros[k]} onChange={(e) => cambiarFiltro(k, e.target.value)}>
+                  <option value={TODOS}>{k === "unid" ? "Todas" : "Todos"}</option>
+                  {k === "unid"
+                    ? opciones.unid.map((r) => <option key={r.id} value={String(r.id)}>{r.nombre}</option>)
+                    : opciones[k].map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <ChevronDown size={20} strokeWidth={1.9} />
+              </label>
+            ))}
+          </div>
+
+          <div role="tablist" className="mr-chips">
+            {CHIPS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={chip === c.id}
+                onClick={() => setChip(c.id)}
+                className={`mr-chip${c.id === "todas" ? " mr-chip--todas" : ""}`}
+                style={{ background: c.bg }}
+              >
+                <Circle size={40} bg={c.iconBg} color={c.iconColor ?? "#fff"}>
+                  <span style={{ fontSize: 21, display: "grid", placeItems: "center" }}>{c.icon}</span>
+                </Circle>
+                {c.label} ({conteos[c.id]})
+              </button>
+            ))}
+            {enLote > 0 && (
+              <div className="mr-lote">
+                <span>{enLote} seleccionados</span>
+                <button type="button" onClick={() => void aprobarLote()} disabled={aprobandoLote}>
+                  {aprobandoLote ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
+                  Aprobar seleccionados
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="mr-table">
+            <div className="mr-grid mr-thead">
+              <span className="mr-cell">
+                <input type="checkbox" className="mr-check" checked={todosMarcados} onChange={marcarTodos}
+                  disabled={seleccionables.length === 0} aria-label="Seleccionar todo" />
+              </span>
+              {HEAD.map((h, i) => <span key={i} className="mr-cell">{h}</span>)}
+            </div>
+
+            {loading && bandeja.length === 0 ? (
+              <div className="mr-empty"><Loader2 size={22} className="animate-spin" style={{ display: "inline" }} /> Cargando…</div>
+            ) : visibles.length === 0 ? (
+              <div className="mr-empty">No hay movimientos con estos filtros.</div>
+            ) : (
+              visibles.map((i) => {
+                const t = TIPO_META[i.tipo]
+                const ap = AP_META[i.aprobacion]
+                const on = seleccion.has(i.key)
+                const busy = actionKey === i.key
                 const dias = diasEsperando(i.fecha)
-                const accionable = esAccionable(i)
                 return (
-                  <div key={i.key} className="rounded-xl border bg-card p-3 md:p-4 space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-start gap-2.5 min-w-0">
-                        {accionable && (
-                          <input
-                            type="checkbox"
-                            className="mt-3 h-3.5 w-3.5 shrink-0 accent-current"
-                            checked={seleccion.has(i.key)}
-                            disabled={busy || aprobandoLote}
-                            onChange={(e) => {
-                              const marcar = e.target.checked
-                              setSeleccion((prev) => {
-                                const next = new Set(prev)
-                                if (marcar) next.add(i.key); else next.delete(i.key)
-                                return next
-                              })
-                            }}
-                          />
-                        )}
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand">
-                          <Icon className="h-4 w-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <p className="text-sm font-semibold truncate">{i.titulo}</p>
-                            <span className={`rounded-full border px-1.5 py-0 text-[10px] font-semibold ${meta.clase}`}>
-                              {meta.label}
-                            </span>
-                            {i.subtitulo && (
-                              <Badge variant="outline" className="text-[10px] px-1.5 py-0">{i.subtitulo}</Badge>
-                            )}
-                          </div>
-                          <p className="text-[11px] text-muted-foreground">
-                            {nombreRuta(i.rutaId)} · {i.quien ?? "—"} · {formatFecha(i.fecha)}
-                            {accionable && dias >= 3 && (
-                              <span className={`ml-1 font-semibold ${dias >= 15 ? "text-red-600" : "text-amber-600"}`}>
-                                · {dias} días esperando
-                              </span>
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <p className="text-sm font-bold text-brand shrink-0 tabular-nums">{formatMonto(i.monto)}</p>
-                    </div>
-
-                    {accionable && (
-                      <div className="flex justify-end gap-2 pt-1">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-8 gap-1.5 text-xs text-destructive hover:text-destructive"
-                          disabled={busy || aprobandoLote}
-                          onClick={() => { setRejectTarget(i); setMotivo("") }}
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          Rechazar
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="h-8 gap-1.5 text-xs"
-                          disabled={busy || aprobandoLote}
-                          onClick={() => (i.estado === "espera_admin" ? setOverrideTarget(i) : handleAprobar(i))}
-                        >
-                          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                          {i.estado === "espera_admin" ? "Aprobar por el admin" : "Aprobar"}
-                        </Button>
-                      </div>
-                    )}
+                  <div key={i.key} className={`mr-grid mr-row${on ? " mr-row--sel" : ""}`}>
+                    <span className="mr-cell">
+                      <input type="checkbox" className="mr-check" checked={on} disabled={!directo(i) || aprobandoLote}
+                        onChange={() => setSeleccion((p) => { const n = new Set(p); if (n.has(i.key)) n.delete(i.key); else n.add(i.key); return n })}
+                        aria-label="Seleccionar" />
+                    </span>
+                    <span className="mr-cell mr-cell--evento">
+                      <TypeIcon tipo={i.tipo} />
+                      <span style={{ fontSize: 17, color: t.color }}>{i.etiqueta}</span>
+                    </span>
+                    <span className="mr-cell">{ruta(i.rutaId)?.nombre ?? `UNID ${i.rutaId}`}</span>
+                    <span className="mr-cell mr-cell--left"><span className="mr-ellipsis" title={i.solicitante}>{i.solicitante}</span></span>
+                    <span className="mr-cell mr-num">{plata(i)}</span>
+                    <span className="mr-cell" style={{ color: ESTATUS_COLOR[i.estatus] ?? "#14205a" }}>{i.estatus || D}</span>
+                    <span className="mr-cell">{i.cuotas ?? D}</span>
+                    <span className="mr-cell" style={{ color: (i.mora ?? 0) > 0 ? "#e11d24" : "#14205a" }}>{i.mora ?? D}</span>
+                    <span className="mr-cell mr-cell--obs" title={i.observacion}>
+                      {i.observacion ? (i.observacion.length > 60 ? `${i.observacion.slice(0, 58)}…` : i.observacion) : D}
+                    </span>
+                    <span className="mr-cell" style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                      <button type="button" className="mr-icon-btn" onClick={() => setDetalle(i)} aria-label="Ver detalle"><Eye size={22} strokeWidth={1.9} /></button>
+                      <button type="button" className="mr-icon-btn" onClick={() => setDetalle(i)} aria-label="Ver evidencia" disabled={i.fotos.length === 0}
+                        title={i.fotos.length ? `${i.fotos.length} adjunto(s)` : "Sin evidencia"}><Camera size={22} strokeWidth={1.9} /></button>
+                    </span>
+                    <span className="mr-cell" style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+                      <button type="button" className="mr-round mr-round--rech" disabled={!accionable(i) || busy || aprobandoLote}
+                        onClick={() => { setRechazo(i); setMotivo("") }} aria-label="Rechazar"><X size={22} strokeWidth={2.6} /></button>
+                      <button type="button" className="mr-round" disabled={!accionable(i) || busy || aprobandoLote}
+                        style={{ background: i.aprobacion === "aprobado" ? "#0d6b6b" : "#c4c9d0" }}
+                        onClick={() => pedirAprobar(i)} aria-label="Aprobar"
+                        title={i.estado === "espera_admin" && !esAdmin ? "Aprobar en lugar del admin" : "Aprobar"}>
+                        {busy ? <Loader2 size={20} className="animate-spin" /> : <Check size={22} strokeWidth={2.6} />}
+                      </button>
+                    </span>
+                    <span className="mr-cell mr-cell--2l">
+                      <span>{fmtFecha(i.fecha)}</span>
+                      <span>{fmtHora(i.fecha)}</span>
+                      {i.aprobacion === "pendiente" && dias >= 3 && (
+                        <span style={{ fontSize: 12, fontWeight: 700, color: dias >= 15 ? "#e11d24" : "#e8590c" }}>{dias} días</span>
+                      )}
+                    </span>
+                    <span className="mr-cell" style={{ padding: "4px 8px" }}>
+                      <span className="mr-ap" style={{ background: ap.bg }}>
+                        <ApIcon ap={i.aprobacion} />
+                        <span><b style={{ color: ap.color }}>{ap.label}</b><small>{fmtHora(i.fechaAprobacion)}</small></span>
+                      </span>
+                    </span>
                   </div>
                 )
-              })}
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
+              })
+            )}
 
-      {/* Confirmacion de aprobar en lugar del admin */}
-      <Dialog open={!!overrideTarget} onOpenChange={(open) => { if (!open) setOverrideTarget(null) }}>
-        <DialogContent className="max-w-sm rounded-2xl">
-          <DialogHeader>
-            <div className="flex items-center justify-center h-12 w-12 rounded-full bg-amber-100 mx-auto mb-2">
-              <AlertTriangle className="h-6 w-6 text-amber-600" />
-            </div>
-            <DialogTitle className="text-center text-base">Aprobar en lugar del admin</DialogTitle>
-            <DialogDescription className="text-center text-xs">
-              Este movimiento superó el límite de su ítem, así que le correspondía al administrador revisarlo.
-              Si lo apruebas tú, se salta esa revisión y queda registrado a tu nombre como aprobado en lugar del admin.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs">
-            <p className="font-semibold">{overrideTarget?.titulo}</p>
-            <p className="text-muted-foreground">
-              {overrideTarget ? `${nombreRuta(overrideTarget.rutaId)} · ${formatMonto(overrideTarget.monto)}` : ""}
-            </p>
+            {filas.length > POR_PAGINA && (
+              <div className="mr-pager">
+                <span>{pag * POR_PAGINA + 1}–{Math.min(filas.length, (pag + 1) * POR_PAGINA)} de {filas.length}</span>
+                <div>
+                  <button type="button" disabled={pag === 0} onClick={() => setPagina(pag - 1)}>Anterior</button>
+                  <button type="button" disabled={pag >= paginas - 1} onClick={() => setPagina(pag + 1)}>Siguiente</button>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="flex justify-end gap-2 pt-1">
-            <Button variant="outline" size="sm" onClick={() => setOverrideTarget(null)}>Cancelar</Button>
-            <Button
-              size="sm"
-              disabled={actionLoadingKey === overrideTarget?.key}
-              onClick={() => overrideTarget && handleAprobar(overrideTarget)}
-            >
-              {actionLoadingKey === overrideTarget?.key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Sí, aprobar"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      </div>
 
-      {/* Dialog motivo de rechazo */}
-      <Dialog open={!!rejectTarget} onOpenChange={(open) => { if (!open) { setRejectTarget(null); setMotivo("") } }}>
-        <DialogContent className="max-w-sm rounded-2xl">
-          <DialogHeader>
-            <DialogTitle>Rechazar movimiento</DialogTitle>
-            <DialogDescription>
-              {rejectTarget?.titulo} — {rejectTarget ? formatMonto(rejectTarget.monto) : ""}
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            value={motivo}
-            onChange={(e) => setMotivo(e.target.value)}
-            placeholder="Motivo del rechazo (opcional)"
-            className="text-sm"
-          />
-          <div className="flex justify-end gap-2 pt-1">
-            <Button variant="outline" size="sm" onClick={() => { setRejectTarget(null); setMotivo("") }}>
-              Cancelar
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={handleRechazar}
-              disabled={actionLoadingKey === rejectTarget?.key}
-            >
-              {actionLoadingKey === rejectTarget?.key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Rechazar"}
-            </Button>
+      {/* ── Detalle y evidencia ──────────────────────────────────────────── */}
+      {detalle && (
+        <div className="mr-modal-bg" onClick={() => setDetalle(null)}>
+          <div className="mr-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mr-modal-head">
+              <TypeIcon tipo={detalle.tipo} size={46} />
+              <div>
+                <div className="mr-modal-title">{detalle.etiqueta} · {detalle.solicitante}</div>
+                <div className="mr-modal-sub">
+                  {ruta(detalle.rutaId)?.nombre ?? `UNID ${detalle.rutaId}`} · {fmtFecha(detalle.fecha)} {fmtHora(detalle.fecha)}
+                </div>
+              </div>
+            </div>
+            {detalle.fotos.length ? (
+              <div className="mr-modal-photos">
+                {detalle.fotos.map((f) => (
+                  <a key={f.url.slice(0, 80) + f.label} href={f.url} target="_blank" rel="noreferrer">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={f.url} alt={f.label} />
+                    {f.label}
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="mr-modal-none">Sin evidencia adjunta</div>
+            )}
+            <div className="mr-modal-kv">
+              <span>Valor</span><b>{plata(detalle)}</b>
+              <span>Estatus</span><b style={{ color: ESTATUS_COLOR[detalle.estatus] }}>{detalle.estatus || D}</b>
+              <span>Aprobación</span><b style={{ color: AP_META[detalle.aprobacion].color }}>{AP_META[detalle.aprobacion].label}</b>
+              {detalle.cuotas != null && (<><span>Cuotas</span><b>{detalle.cuotas}</b></>)}
+              {detalle.mora != null && (<><span>Mora</span><b>{detalle.mora} cuotas</b></>)}
+              <span>Observación</span><b>{detalle.observacion || D}</b>
+              {detalle.detalle.map(([k, v]) => (<span key={k} style={{ display: "contents" }}><span>{k}</span><b>{v}</b></span>))}
+            </div>
+            <div className="mr-modal-actions">
+              <button type="button" className="mr-btn mr-btn--sec" onClick={() => setDetalle(null)}>Cerrar</button>
+              {accionable(detalle) && (
+                <>
+                  <button type="button" className="mr-btn mr-btn--danger" disabled={actionKey === detalle.key}
+                    onClick={() => { setRechazo(detalle); setMotivo("") }}>Rechazar</button>
+                  <button type="button" className="mr-btn mr-btn--ok" disabled={actionKey === detalle.key}
+                    onClick={() => pedirAprobar(detalle)}>
+                    {actionKey === detalle.key ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                    {detalle.estado === "espera_admin" && !esAdmin ? "Aprobar en lugar del admin" : "Aprobar"}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      )}
+
+      {/* ── Motivo del rechazo ───────────────────────────────────────────── */}
+      {rechazo && (
+        <div className="mr-modal-bg" onClick={() => setRechazo(null)}>
+          <div className="mr-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mr-modal-title">Rechazar movimiento</div>
+            <div className="mr-modal-sub">{rechazo.etiqueta} · {rechazo.solicitante} · {plata(rechazo)}</div>
+            <textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Motivo del rechazo (opcional)" />
+            <div className="mr-modal-actions">
+              <button type="button" className="mr-btn mr-btn--sec" onClick={() => setRechazo(null)}>Cancelar</button>
+              <button type="button" className="mr-btn mr-btn--danger" disabled={actionKey === rechazo.key} onClick={() => void rechazar()}>
+                {actionKey === rechazo.key ? <Loader2 size={16} className="animate-spin" /> : <X size={16} />} Rechazar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Aprobar en lugar del admin (secretaría) ──────────────────────── */}
+      {enLugarDelAdmin && (
+        <div className="mr-modal-bg" onClick={() => setEnLugarDelAdmin(null)}>
+          <div className="mr-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mr-modal-head">
+              <AlertTriangle size={30} color="#e8590c" />
+              <div className="mr-modal-title">Aprobar en lugar del admin</div>
+            </div>
+            <div className="mr-aviso">
+              Este movimiento superó el límite de su ítem, así que le correspondía al administrador revisarlo. Si lo
+              apruebas tú, se salta esa revisión y queda registrado a tu nombre como aprobado en lugar del admin.
+            </div>
+            <div className="mr-modal-sub">{enLugarDelAdmin.etiqueta} · {enLugarDelAdmin.observacion} · {plata(enLugarDelAdmin)}</div>
+            <div className="mr-modal-actions">
+              <button type="button" className="mr-btn mr-btn--sec" onClick={() => setEnLugarDelAdmin(null)}>Cancelar</button>
+              <button type="button" className="mr-btn mr-btn--ok" disabled={actionKey === enLugarDelAdmin.key} onClick={() => void aprobar(enLugarDelAdmin)}>
+                {actionKey === enLugarDelAdmin.key ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />} Sí, aprobar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

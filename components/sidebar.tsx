@@ -6,7 +6,6 @@ import {
   ChevronLeft,
   ChevronsRight,
   Plus,
-  CheckCircle,
   TrendingUp,
   BarChart3,
   BarChart2,
@@ -70,12 +69,9 @@ const navGroups: NavGroup[] = [
       { id: "admin-dashboard",        label: "Dashboard",          icon: LayoutDashboard, colorClass: "sidebar-item-summary"  },
       { id: "admin-route-detail",     label: "Detalle Rutas",      icon: ClipboardList,   colorClass: "sidebar-item-clients"  },
       { id: "resumen-rutas",          label: "Resumen Rutas",      icon: LayoutList,      colorClass: "sidebar-item-clients"  },
-      { id: "pending-authorizations", label: "Autor. Admin",       icon: CheckCircle,     colorClass: "sidebar-item-auth"     },
-      // Duplicado a proposito en los dos grupos: el admin y la secretaria
-      // entran los dos a esta bandeja. (La razon vieja —que el menu se armaba
-      // por grupo y el admin no lo veia— ya no aplica: hoy manda el rol.)
-      // Las ventas por aprobar solo estan aca: "Autor. Admin" lee
-      // `gastosregistros`, donde una venta no aparece.
+      // LA BANDEJA ÚNICA de aprobaciones (05-oct-2026): reemplaza a "Autor.
+      // Admin" y "Autor. Secret.". Va en los dos grupos: admin y secretaría
+      // entran los dos, y cada uno aprueba su paso.
       { id: "movimientos-revision",   label: "Movim. Revisión",    icon: ShieldCheck,     colorClass: "sidebar-item-payment"  },
       { id: "admin-route-monitor",    label: "Monitoreo Rutas",    icon: Route,           colorClass: "sidebar-item-route"    },
       { id: "configure-route",        label: "Ordenar Ruta",       icon: MapPin,          colorClass: "sidebar-item-route"    },
@@ -88,7 +84,6 @@ const navGroups: NavGroup[] = [
     group: "Secretaria",
     items: [
       { id: "monitoreo-recaudos",        label: "Mon. Recaudos",   icon: TrendingUp,    colorClass: "sidebar-item-summary"   },
-      { id: "secretary-authorizations",  label: "Autor. Secret.",  icon: CheckCircle,   colorClass: "sidebar-item-secretary" },
       { id: "movimientos-revision",      label: "Movim. Revisión", icon: ShieldCheck,   colorClass: "sidebar-item-payment"   },
       { id: "multas",                    label: "Multas",          icon: AlertTriangle, colorClass: "sidebar-item-expense"   },
       { id: "documentos",                label: "Documentos",      icon: FolderOpen,    colorClass: "sidebar-item-clients"   },

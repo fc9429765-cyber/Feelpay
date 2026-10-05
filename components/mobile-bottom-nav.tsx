@@ -31,13 +31,13 @@ const VENDEDOR_ITEMS: NavItem[] = [
 const ADMIN_ITEMS: NavItem[] = [
   { id: "admin-dashboard",        icon: LayoutDashboard, label: "Dashboard", colorClass: "nav-item-home"     },
   { id: "admin-route-detail",     icon: ClipboardList,   label: "Rutas",     colorClass: "nav-item-summary"  },
-  { id: "pending-authorizations", icon: CheckCircle,     label: "Autoriz.",  colorClass: "nav-item-payment"  },
+  { id: "movimientos-revision",   icon: ShieldCheck,     label: "Revisión",  colorClass: "nav-item-payment"  },
   { id: "admin-route-monitor",    icon: Route,           label: "Monitor",   colorClass: "nav-item-expense"  },
   { id: "configure-route",        icon: MapPin,          label: "Ordenar",   colorClass: "nav-item-sale"     },
 ]
 
 const SECRETARIA_ITEMS: NavItem[] = [
-  { id: "secretary-authorizations",  icon: CheckCircle, label: "Autoriz.",  colorClass: "nav-item-payment"  },
+  { id: "movimientos-revision",      icon: ShieldCheck, label: "Revisión",  colorClass: "nav-item-payment"  },
   { id: "payment-control",           icon: ListChecks,  label: "Control",   colorClass: "nav-item-summary"  },
   { id: "secretary-reports",         icon: FileText,    label: "Reportes",  colorClass: "nav-item-home"     },
   { id: "secretary-admin-reportes",  icon: FileText,    label: "Rep. Admin",colorClass: "nav-item-expense"  },

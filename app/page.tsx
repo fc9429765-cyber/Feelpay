@@ -8,8 +8,6 @@ import { NewClient } from "@/components/views/new-client"
 import { InactivationRequests } from "@/components/views/inactivation-requests"
 import { ViewLoans } from "@/components/views/view-loans"
 import { NewLoan } from "@/components/views/new-loan"
-import { PendingAuthorizations } from "@/components/views/pending-authorizations"
-import { SecretaryAuthorizations } from "@/components/views/secretary-authorizations"
 import { MovimientosRevision } from "@/components/views/movimientos-revision"
 import { MultasView } from "@/components/views/multas-view"
 import { DocumentosView } from "@/components/views/documentos-view"
@@ -930,12 +928,16 @@ export default function Page() {
     // aparecería si la solicitud entra con la app abierta, y las 7 ventas que
     // ya están pendientes seguirían sin avisar a nadie.
     if (["secretaria", "secretario", "admin", "administrador"].includes(rol)) {
-      supabase
-        .from("solicitudes_revision")
-        .select("id", { count: "exact", head: true })
-        .eq("estado", "pendiente")
-        .then(({ count }: { count: number | null }) => {
-          if (count && count > 0) {
+      // La bandeja única junta las dos fuentes, y el aviso también: lo que
+      // superó el umbral de la ruta y lo que espera en la cadena por ítem.
+      Promise.all([
+        supabase.from("solicitudes_revision").select("id", { count: "exact", head: true }).eq("estado", "pendiente"),
+        supabase.from("gastosregistros").select("id", { count: "exact", head: true }).eq("estadoadmin", "por aprobar"),
+        supabase.from("gastosregistros").select("id", { count: "exact", head: true }).eq("estadosecre", "por aprobar"),
+      ])
+        .then((rs: { count: number | null }[]) => {
+          const count = rs.reduce((s, r) => s + (r.count ?? 0), 0)
+          if (count > 0) {
             setModuleBadgeCounts((prev) => ({ ...prev, "movimientos-revision": count }))
           }
         })
@@ -1422,14 +1424,14 @@ export default function Page() {
             fechaVenta={jornadaAtrasadaAbierta ?? undefined}
           />
         )
+      // Las dos pantallas viejas de autorizaciones se unificaron en la
+      // bandeja: quien las tenga guardadas o en sus permisos llega a ella.
       case "pending-authorizations":
-        return <PendingAuthorizations />
-      case "monitoreo-recaudos":
-        return <MonitoreoRecaudos currentUser={currentUser} />
       case "secretary-authorizations":
-        return <SecretaryAuthorizations />
       case "movimientos-revision":
         return <MovimientosRevision />
+      case "monitoreo-recaudos":
+        return <MonitoreoRecaudos currentUser={currentUser} />
       case "multas":
         return <MultasView />
       case "documentos":
