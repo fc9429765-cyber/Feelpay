@@ -34,7 +34,7 @@
 
 import { useEffect, useState } from "react"
 import {
-  ArrowLeftRight, BarChart3, Banknote, CalendarDays, CheckCircle2, Eye, ShoppingBag, ShoppingCart, XCircle,
+  ArrowLeftRight, BarChart3, Banknote, CalendarDays, CheckCircle2, ChevronDown, Eye, ShoppingBag, ShoppingCart, XCircle,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { createClient } from "@/lib/supabase/client"
@@ -81,6 +81,22 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
   const [semana, setSemana] = useState<Semana | null>(null)
   /** El detalle (días y pagos por cliente) que abre el ojito. */
   const [verDetalle, setVerDetalle] = useState(false)
+  /**
+   * PLEGADO, como acordeón. Se recuerda por ruta en el teléfono. Arranca
+   * desplegado y el guardado se lee en un efecto (no en el estado inicial),
+   * igual que el encabezado plegado de Pagos, para no romper la hidratación.
+   */
+  const clavePlegado = `resumenSemanalPlegado:${rutaId}`
+  const [plegado, setPlegado] = useState(false)
+  useEffect(() => {
+    try { setPlegado(localStorage.getItem(clavePlegado) === "1") } catch { /* modo privado */ }
+  }, [clavePlegado])
+  const alternarPlegado = () =>
+    setPlegado((prev) => {
+      const siguiente = !prev
+      try { localStorage.setItem(clavePlegado, siguiente ? "1" : "0") } catch { /* modo privado */ }
+      return siguiente
+    })
 
   const lunes = lunesDe(fecha)
   const domingo = sumarDias(lunes, 6)
@@ -153,11 +169,24 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
       <CardContent className="px-2 py-2.5">
         {/* Si no cabe todo en una línea, el rango baja al renglón de abajo
             en vez de recortar el nombre de la ruta. */}
-        <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <CalendarDays className="h-5 w-5 shrink-0 text-info" />
-          <p className="min-w-0 text-[clamp(12px,3.8vw,14px)] font-bold leading-tight text-foreground">
-            Resumen Semanal{nombreRuta ? ` (${nombreRuta})` : ""}
-          </p>
+        <div className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 ${plegado ? "" : "mb-2"}`}>
+          {/* EL TÍTULO ES EL BOTÓN DEL ACORDEÓN: pliega y despliega las
+              cifras. El ojito queda afuera y abre el detalle igual. */}
+          <button
+            type="button"
+            onClick={alternarPlegado}
+            aria-expanded={!plegado}
+            className="flex min-w-0 items-center gap-2 text-left"
+            title={plegado ? "Mostrar el resumen semanal" : "Ocultar el resumen semanal"}
+          >
+            <CalendarDays className="h-5 w-5 shrink-0 text-info" />
+            <span className="min-w-0 text-[clamp(12px,3.8vw,14px)] font-bold leading-tight text-foreground">
+              Resumen Semanal{nombreRuta ? ` (${nombreRuta})` : ""}
+            </span>
+            <ChevronDown
+              className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${plegado ? "-rotate-90" : ""}`}
+            />
+          </button>
           {/* EL OJITO: el detalle día por día, y de ahí los pagos de un día. */}
           <button
             type="button"
@@ -178,6 +207,7 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
             teléfono y se salían del borde. La letra se ajusta al ancho de la
             pantalla (clamp): en un teléfono chico se achica en vez de
             salirse, y en uno grande no pasa del tamaño normal. */}
+        {!plegado && (<>
         <div className="grid grid-cols-3 gap-1">
           {casillas.map((c) => (
             <div key={c.label} className="min-w-0 rounded-xl border border-border px-1 py-1.5">
@@ -208,6 +238,7 @@ export function ResumenSemanal({ rutaId, fecha, moneda }: Props) {
             {plata(s.ventas)}
           </p>
         </div>
+        </>)}
       </CardContent>
       {verDetalle && (
         <DetalleSemanal
