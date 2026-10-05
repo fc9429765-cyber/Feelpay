@@ -85,7 +85,7 @@ export function PagosMapaRuta({ clientes }: { clientes: ClienteMapa[] }) {
         {sinUbicacion > 0 && <span className="flex items-center gap-1"><MapPinOff className="h-3 w-3" /> {sinUbicacion} sin ubicación</span>}
       </div>
 
-      <div className="h-[340px] overflow-hidden rounded-xl border shadow-sm md:h-[460px]">
+      <div className="isolate h-[340px] overflow-hidden rounded-xl border shadow-sm md:h-[460px]">
         {puntos.length > 0 || aqui ? (
           <MapaRutaClientes puntos={puntos} aqui={aqui} enfocado={enfocado} />
         ) : (

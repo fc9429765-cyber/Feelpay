@@ -445,7 +445,7 @@
 .dr-gasto:last-child { border-bottom: 0; }
 
 /* Mapa */
-.dr-map { height: 290px; overflow: hidden; }
+.dr-map { height: 290px; overflow: hidden; isolation: isolate; }
 /* Leaflet calcula mal dónde está el mouse dentro de un `zoom`: el mapa se
    dibuja sin escala (zoom inverso) y con su alto ya reducido. */
 .dr-map-inner { zoom: calc(1 / var(--k)); height: 100%; }

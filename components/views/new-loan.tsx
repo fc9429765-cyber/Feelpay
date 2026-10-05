@@ -38,6 +38,7 @@ import { fotoParaCola, esFotoPendiente } from "@/lib/foto-offline"
 import { esErrorDeRed } from "@/lib/credenciales-offline"
 import { obtenerUbicacion } from "@/lib/geo"
 import dynamic from "next/dynamic"
+import { CamaraEnApp } from "@/components/camara-en-app"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Dialog,
@@ -418,6 +419,12 @@ export function NewLoan({
    * La foto del respaldo NO se guarda: solo se usa para leer la dirección.
    */
   const [leerDireccion, setLeerDireccion] = useState(false)
+  /**
+   * LA CÁMARA DENTRO DE LA APP (components/camara-en-app.tsx). Con la cámara
+   * del teléfono, Android cerraba la app en los celulares con poca memoria y
+   * la venta se perdía. Cada foto dice a qué input y a qué manejador va.
+   */
+  const [camara, setCamara] = useState<null | { titulo: string; inputId: string; destino: "cedula" | "reverso" | "local" | "evidencia" }>(null)
   const [procesandoRespaldo, setProcesandoRespaldo] = useState(false)
   const [pagoAdelantado, setPagoAdelantado] = useState(false)
   // Por defecto el plan arranca MAÑANA (regla de negocio de siempre). Con
@@ -2969,7 +2976,24 @@ export function NewLoan({
           </Seccion>
         )}
 
-        {/* ── Datos del cliente ─────────────────────────────────────────── */}
+        {camara && (
+        <CamaraEnApp
+          titulo={camara.titulo}
+          inputId={camara.inputId}
+          onCerrar={() => setCamara(null)}
+          onFoto={(file) => {
+            // Los manejadores esperan el evento del input: se les pasa uno con
+            // la foto, y el `value = ""` que hacen cae en un objeto suelto.
+            const ev = { target: { files: [file], value: "" } } as unknown as React.ChangeEvent<HTMLInputElement>
+            if (camara.destino === "cedula") void handleCedulaCapture(ev)
+            else if (camara.destino === "reverso") void handleRespaldoCapture(ev)
+            else if (camara.destino === "local") void handleFotoLocal(ev)
+            else { void handleComprobante(ev); clearFieldError("evidencia") }
+          }}
+        />
+      )}
+
+      {/* ── Datos del cliente ─────────────────────────────────────────── */}
         <Seccion icon={User} title="Datos del cliente">
           {isNewClient ? (
             <>
@@ -2979,6 +3003,7 @@ export function NewLoan({
                 <input type="file" accept="image/*" capture="environment" onChange={handleCedulaCapture} className="cv-file" id="cedula-upload" />
                 <label
                   htmlFor="cedula-upload"
+                  onClick={(e) => { e.preventDefault(); if (!procesandoCedula) setCamara({ titulo: "Foto de la cédula", inputId: "cedula-upload", destino: "cedula" }) }}
                   className={`cv-photo${cedulaImage ? " cv-photo--done" : ""}${procesandoCedula ? " cv-photo--busy" : ""}`}
                   title={procesandoCedula ? "Procesando cédula..." : "Toca para capturar la cédula"}
                 >
@@ -3123,7 +3148,11 @@ export function NewLoan({
                     id="cedula-respaldo-upload"
                     disabled={procesandoRespaldo}
                   />
-                  <label htmlFor="cedula-respaldo-upload" className="cv-reverso">
+                  <label
+                    htmlFor="cedula-respaldo-upload"
+                    className="cv-reverso"
+                    onClick={(e) => { e.preventDefault(); if (!procesandoRespaldo) setCamara({ titulo: "Reverso del documento", inputId: "cedula-respaldo-upload", destino: "reverso" }) }}
+                  >
                     {procesandoRespaldo
                       ? <Loader2 size={20} className="animate-spin" />
                       : <Camera size={22} fill="#1f6fe0" color="#fff" strokeWidth={1.6} />}
@@ -3328,6 +3357,7 @@ export function NewLoan({
                 <input type="file" accept="image/*" capture="environment" onChange={handleFotoLocal} className="cv-file" id="foto-local" disabled={subiendoFotoLocal} />
                 <label
                   htmlFor="foto-local"
+                  onClick={(e) => { e.preventDefault(); if (!subiendoFotoLocal) setCamara({ titulo: "Foto del local", inputId: "foto-local", destino: "local" }) }}
                   className={`cv-photo${fotoLocalUrl ? " cv-photo--done" : ""}${subiendoFotoLocal ? " cv-photo--busy" : ""}`}
                 >
                   {fotoLocalUrl && !subiendoFotoLocal && (
@@ -3717,6 +3747,7 @@ export function NewLoan({
           />
           <label
             htmlFor="comprobante-venta"
+            onClick={(e) => { e.preventDefault(); if (!subiendoComprobante) setCamara({ titulo: "Evidencia de entrega", inputId: "comprobante-venta", destino: "evidencia" }) }}
             className={`cv-evid${comprobanteUrl ? " cv-evid--done" : ""}${formErrors.has("evidencia") ? " cv-evid--err" : ""}`}
           >
             {subiendoComprobante

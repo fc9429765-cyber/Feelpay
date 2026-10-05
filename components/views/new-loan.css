@@ -299,7 +299,7 @@
 }
 
 /* ── El mapa con el pin del cliente ────────────────────────────────────── */
-.cv-map { height: 260px; overflow: hidden; border-radius: 8px; border: 1px solid var(--cv-input); background: var(--cv-tint); }
+.cv-map { isolation: isolate; height: 260px; overflow: hidden; border-radius: 8px; border: 1px solid var(--cv-input); background: var(--cv-tint); }
 /* Leaflet calcula mal dónde se toca dentro de un `zoom`: el mapa deshace la
    escala del formulario (la misma receta de detalle-ruta.css). */
 .cv-map-inner { zoom: calc(1 / var(--k)); height: 100%; }
