@@ -3692,13 +3692,27 @@ export function NewLoan({
             <Info size={20} color="#fff" fill="#1f6fe0" />
             Es obligatorio subir una foto para poder crear la venta.
           </div>
+          {/* LA CÁMARA DIRECTO. `capture` solo abre la cámara si el campo
+              acepta ÚNICAMENTE imágenes: con "image/*,application/pdf",
+              Android lo ignora y muestra la galería / el selector de archivos.
+              Por eso son dos campos: el recuadro grande saca la foto, y el
+              enlace de abajo deja elegir de la galería o subir un PDF (un
+              comprobante de transferencia que llegó por WhatsApp). */}
           <input
             type="file"
-            accept="image/*,application/pdf"
+            accept="image/*"
             capture="environment"
             onChange={(e) => { void handleComprobante(e); clearFieldError("evidencia") }}
             className="cv-file"
             id="comprobante-venta"
+            disabled={subiendoComprobante}
+          />
+          <input
+            type="file"
+            accept="image/*,application/pdf"
+            onChange={(e) => { void handleComprobante(e); clearFieldError("evidencia") }}
+            className="cv-file"
+            id="comprobante-venta-galeria"
             disabled={subiendoComprobante}
           />
           <label
@@ -3716,17 +3730,22 @@ export function NewLoan({
                     ? esFotoPendiente(comprobanteUrl)
                       ? "Guardada sin señal · sube con la venta"
                       : "Foto cargada · toca para reemplazar"
-                    : "Subir foto de la entrega del dinero"}
+                    : "Tomar foto de la entrega del dinero"}
               </span>
               <span className="cv-evid-sub">En efectivo: foto entregando el dinero al cliente.</span>
               <span className="cv-evid-sub">En transferencia: foto del comprobante de transferencia.</span>
             </span>
           </label>
-          {comprobanteUrl && (
-            <button type="button" className="cv-hint" style={{ alignSelf: "flex-start", border: 0, background: "none", cursor: "pointer", color: "#dc2626" }} onClick={() => setComprobanteUrl(null)}>
-              Quitar la foto
-            </button>
-          )}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", alignItems: "center" }}>
+            <label htmlFor="comprobante-venta-galeria" className="cv-hint" style={{ cursor: "pointer", color: "#1f6fe0", textDecoration: "underline" }}>
+              o elegir de la galería / subir PDF
+            </label>
+            {comprobanteUrl && (
+              <button type="button" className="cv-hint" style={{ border: 0, background: "none", cursor: "pointer", color: "#dc2626" }} onClick={() => setComprobanteUrl(null)}>
+                Quitar la foto
+              </button>
+            )}
+          </div>
         </Seccion>
 
         {/* ── Pie ────────────────────────────────────────────────────────── */}
