@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Barcode as BarCode, X, Loader2, UserPlus, AlertCircle, CheckCircle2, ChevronsUpDown, Check, Paperclip, Trash2, ChevronLeft, ChevronDown, User, Store, CircleDollarSign, Camera, Lock, MapPin, Info, MessageCircle, ArrowLeftRight, Shuffle, Calculator, SlidersHorizontal } from "lucide-react"
+import { Barcode as BarCode, X, Loader2, UserPlus, AlertCircle, CheckCircle2, ChevronsUpDown, Check, Paperclip, Trash2, ChevronLeft, ChevronDown, User, Store, CircleDollarSign, Camera, Lock, MapPin, Info, MessageCircle, ArrowLeftRight, Shuffle, Calculator, SlidersHorizontal, LocateFixed, MapPinned } from "lucide-react"
 import "./new-loan.css"
 // Ya no usamos los helpers de lib/database (createClient/createLoan/
 // createPaymentPlan): la creacion de venta corre ahora en una sola
@@ -37,6 +37,7 @@ import { enviarOEncolar } from "@/lib/offline-queue"
 import { fotoParaCola, esFotoPendiente } from "@/lib/foto-offline"
 import { esErrorDeRed } from "@/lib/credenciales-offline"
 import { obtenerUbicacion } from "@/lib/geo"
+import dynamic from "next/dynamic"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Dialog,
@@ -167,6 +168,11 @@ type NewLoanProps = {
   onCreated?: () => void
 }
 
+const MapaUbicacionCliente = dynamic(() => import("@/components/mapa-ubicacion-cliente"), {
+  ssr: false,
+  loading: () => <div className="cv-map-loading">Cargando mapa…</div>,
+})
+
 // ── Piezas del diseño de Crear Venta (CrearVenta.jsx) ─────────────────────
 // Van FUERA del componente: definidas adentro, React las vería como un
 // componente nuevo en cada tecla y los campos perderían el foco al escribir.
@@ -209,6 +215,20 @@ export function NewLoan({
   const diaVenta = fechaVenta || todayColombia()
   const esRetroactiva = diaVenta !== todayColombia()
   const [isNewClient, setIsNewClient] = useState(false)
+  /**
+   * LA UBICACIÓN DEL CLIENTE, con PIN.
+   *
+   * `ubicActual` es dónde está el vendedor (GPS). `pinCliente` es lo que se
+   * GUARDA como ubicación del cliente: arranca en el GPS (cliente nuevo) o en
+   * la ubicación ya guardada (renovación), y el vendedor lo puede mover en el
+   * mapa. `pinManual` dice que lo tocó: en una renovación es lo que autoriza a
+   * CORREGIR la ubicación guardada (scripts/128); sin tocarlo, se respeta.
+   */
+  const [ubicActual, setUbicActual] = useState<{ lat: number; lng: number; precision: number } | null>(null)
+  const [pinCliente, setPinCliente] = useState<{ lat: number; lng: number } | null>(null)
+  const [pinManual, setPinManual] = useState(false)
+  const [ubicGuardada, setUbicGuardada] = useState<{ lat: number; lng: number } | null>(null)
+  const [buscandoGps, setBuscandoGps] = useState(false)
   const [selectedClient, setSelectedClient] = useState(preSelectedClientId || "")
   const [clientSearch, setClientSearch] = useState("")
   // Etiqueta del cliente elegido. Va aparte de `clientSearch` porque esa
@@ -1499,7 +1519,84 @@ export function NewLoan({
     setCedulaImage(null)
   }
 
+  // El GPS al abrir el formulario: es el punto azul y el pin de arranque.
+  const leerGps = async (moverPin: boolean) => {
+    setBuscandoGps(true)
+    try {
+      const pos = await obtenerUbicacion()
+      const aqui = { lat: pos.latitud, lng: pos.longitud, precision: pos.precision }
+      setUbicActual(aqui)
+      if (moverPin) {
+        setPinCliente({ lat: aqui.lat, lng: aqui.lng })
+        setPinManual(true)
+      } else {
+        setPinCliente((prev) => prev ?? { lat: aqui.lat, lng: aqui.lng })
+      }
+    } catch (err) {
+      console.warn("[v0] Crear Venta sin GPS:", err)
+      if (moverPin) {
+        toast({ title: "Sin ubicación", description: "No se pudo leer el GPS. Pon el pin tocando el mapa.", variant: "destructive" })
+      }
+    } finally {
+      setBuscandoGps(false)
+    }
+  }
+  useEffect(() => { void leerGps(false) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // RENOVACIÓN: el pin arranca en la ubicación que el cliente YA tiene.
+  useEffect(() => {
+    if (isNewClient || !selectedClient) { setUbicGuardada(null); return }
+    let vigente = true
+    void createClient()
+      .from("clients").select("latitud, longitud").eq("id", selectedClient).maybeSingle()
+      .then(({ data }: { data: unknown }) => {
+        if (!vigente) return
+        const c = data as { latitud: number | null; longitud: number | null } | null
+        const g = c?.latitud != null && c?.longitud != null ? { lat: Number(c.latitud), lng: Number(c.longitud) } : null
+        setUbicGuardada(g)
+        setPinManual(false)
+        setPinCliente(g ?? (ubicActual ? { lat: ubicActual.lat, lng: ubicActual.lng } : null))
+      })
+    return () => { vigente = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClient, isNewClient])
+
+  const moverPin = (lat: number, lng: number) => {
+    setPinCliente({ lat, lng })
+    setPinManual(true)
+  }
+
+  /** El mapa con el pin. Lo usan el cliente nuevo y la renovación. */
+  const bloqueMapa = (
+    <div className="cv-field cv-span-2">
+      <div className="cv-map">
+        <div className="cv-map-inner">
+          <MapaUbicacionCliente pin={pinCliente} actual={ubicActual} onPin={moverPin} />
+        </div>
+      </div>
+      <div className="cv-map-foot">
+        <span className="cv-hint" style={{ paddingLeft: 0 }}>
+          {pinCliente
+            ? `Pin: ${pinCliente.lat.toFixed(6)}, ${pinCliente.lng.toFixed(6)}${
+                pinManual ? " · puesto a mano" : !isNewClient && ubicGuardada ? " · ubicación guardada" : " · tu ubicación actual"
+              }`
+            : buscandoGps ? "Buscando tu ubicación…" : "Toca el mapa para poner el pin del cliente."}
+          {ubicActual && ` · precisión ±${Math.round(ubicActual.precision)} m`}
+        </span>
+        <button type="button" className="cv-reverso" onClick={() => void leerGps(true)} disabled={buscandoGps}>
+          {buscandoGps ? <Loader2 size={16} className="animate-spin" /> : <LocateFixed size={16} />}
+          Usar mi ubicación actual
+        </button>
+      </div>
+      <span className="cv-hint">Arrastra el pin rojo o toca el mapa para marcar dónde está el cliente.</span>
+    </div>
+  )
+
   const resetFormularioVenta = () => {
+    // La ubicación vuelve a la del vendedor: el pin era de ESTE cliente.
+    setPinManual(false)
+    setUbicGuardada(null)
+    setPinCliente(ubicActual ? { lat: ubicActual.lat, lng: ubicActual.lng } : null)
     setLeerDireccion(false)
     // La evidencia es de ESTA venta: si quedara, la siguiente salía con la
     // foto de la anterior.
@@ -2014,12 +2111,22 @@ export function NewLoan({
       //
       // Va DESPUES de las validaciones para no hacerle esperar hasta 10s de
       // GPS a un formulario que igual iba a rebotar.
-      try {
-        const pos = await obtenerUbicacion()
-        p_cliente.latitud = pos.latitud
-        p_cliente.longitud = pos.longitud
-      } catch (err) {
-        console.warn("[v0] Venta sin ubicacion (se capturara en el primer cobro):", err)
+      // EL PIN MANDA. Lo que se ve en el mapa es lo que se guarda. En una
+      // renovación, solo si el vendedor lo movió viaja `ubicacion_manual`, y
+      // con eso el servidor CORRIGE la ubicación ya guardada (scripts/128);
+      // sin tocarlo, la de siempre se respeta.
+      if (pinCliente) {
+        p_cliente.latitud = pinCliente.lat
+        p_cliente.longitud = pinCliente.lng
+        if (!isNewClient && pinManual) p_cliente.ubicacion_manual = true
+      } else {
+        try {
+          const pos = await obtenerUbicacion()
+          p_cliente.latitud = pos.latitud
+          p_cliente.longitud = pos.longitud
+        } catch (err) {
+          console.warn("[v0] Venta sin ubicacion (se capturara en el primer cobro):", err)
+        }
       }
 
       // ── Umbral de aprobacion por ruta (venta nueva vs renovacion) ──────
@@ -3247,8 +3354,18 @@ export function NewLoan({
                   />
                 </div>
               </div>
+              {bloqueMapa}
             </div>
         </Seccion>
+        )}
+
+        {/* ── Ubicación del cliente (renovación) ──────────────────────────
+            A un cliente que ya existe no se le piden los datos del comercio,
+            pero sí se puede corregir dónde está. */}
+        {!isNewClient && selectedClient && (
+          <Seccion icon={MapPinned} title="Ubicación del cliente">
+            <div className="cv-grid-2">{bloqueMapa}</div>
+          </Seccion>
         )}
 
         {/* ── Datos de la venta ─────────────────────────────────────────── */}

@@ -297,3 +297,13 @@
   .cv-root select.cv-input,
   .cv-root textarea.cv-input { font-weight: 700 !important; }
 }
+
+/* ── El mapa con el pin del cliente ────────────────────────────────────── */
+.cv-map { height: 260px; overflow: hidden; border-radius: 8px; border: 1px solid var(--cv-input); background: var(--cv-tint); }
+/* Leaflet calcula mal dónde se toca dentro de un `zoom`: el mapa deshace la
+   escala del formulario (la misma receta de detalle-ruta.css). */
+.cv-map-inner { zoom: calc(1 / var(--k)); height: 100%; }
+.cv-map .leaflet-container { height: 100%; width: 100%; font-family: inherit; }
+.cv-map-loading { height: 100%; display: grid; place-items: center; color: var(--cv-muted); font-size: 14px; }
+.cv-map-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.cv-map-foot .cv-reverso { display: inline-flex; align-items: center; gap: 6px; margin-left: 0; height: 36px; }
