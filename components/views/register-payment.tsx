@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { DollarSign, X, Check, Eye, Clock, ArrowLeftRight, Camera, Edit, FileText, History, User, MoreVertical, Receipt, Loader2, CheckCircle2, XCircle, Users, Pencil, Trash2, RefreshCw, ShoppingCart, MapPinOff, MapPin, AlertCircle, Play, Share2, FileDown, ChevronUp, ChevronDown, Banknote, PieChart } from "lucide-react"
+import { DollarSign, X, Check, Eye, Clock, ArrowLeftRight, Camera, Edit, FileText, History, User, MoreVertical, Receipt, Loader2, CheckCircle2, XCircle, Users, Pencil, Trash2, RefreshCw, ShoppingCart, MapPinOff, MapPin, AlertCircle, Play, Share2, FileDown, ChevronUp, ChevronDown, Banknote, PieChart, Map as MapIcon } from "lucide-react"
 import { RutaNoIniciada } from "@/components/views/ruta-no-iniciada"
 import { leerAplazados, aplazar, quitarAplazado, horaDeAplazado } from "@/lib/aplazados"
 import {
@@ -67,6 +67,8 @@ import { getUsuarioSesion } from "@/lib/movimientos"
 import { obtenerUbicacion, evaluarGeocerca, formatearDistancia, type ResultadoGeocerca, type UbicacionMedida } from "@/lib/geo"
 import { useEstadoGps } from "@/lib/use-gps"
 import { fotoParaCola } from "@/lib/foto-offline"
+import { useClientesAsignados } from "@/lib/use-clientes-asignados"
+import { PagosMapaRuta, type ClienteMapa } from "@/components/pagos-mapa-ruta"
 import "./register-payment.css"
 
 /**
@@ -428,9 +430,10 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
   // "pendientes" es la pestaña de la RUTA (así se llama por dentro desde
   // siempre; en pantalla dice "Ruta"). "aplazados" es la de los que quedaron
   // para después, que en pantalla dice "Pendientes".
-  const TAB_ORDER: Array<"pendientes" | "aplazados" | "gestionados" | "ventas"> =
-    ["pendientes", "aplazados", "gestionados", "ventas"]
-  const [activeTab, setActiveTab] = useState<"pendientes" | "aplazados" | "gestionados" | "ventas">("pendientes")
+  // "mapa" = la ruta entera en el orden de visita, con el mapa (pagos-mapa-ruta).
+  const TAB_ORDER: Array<"pendientes" | "aplazados" | "gestionados" | "ventas" | "mapa"> =
+    ["pendientes", "aplazados", "gestionados", "ventas", "mapa"]
+  const [activeTab, setActiveTab] = useState<"pendientes" | "aplazados" | "gestionados" | "ventas" | "mapa">("pendientes")
 
   /**
    * Los que hoy quedaron PARA DESPUÉS. Ni pago ni no pago: no pasó nada
@@ -761,6 +764,8 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
   const [searchTerm, setSearchTerm] = useState("")
   const [paymentPhoto, setPaymentPhoto] = useState<string | null>(null)
   const [isDiario, setIsDiario] = useState(true)
+  /** Clientes distintos con préstamo activo: el mismo número del Resumen del Día. */
+  const clientesActivos = useClientesAsignados(currentRutaId)
 
   // Encabezado plegado (solo movil). En un telefono el bloque de arriba
   // —titulo, refrescar, circulos de mora, Diario/No Diario, Nueva Venta,
@@ -1025,6 +1030,27 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
    * sigue saliendo de `managedToday`: contar como resuelto al que se pospuso
    * haría subir el porcentaje por posponer clientes.
    */
+  /**
+   * LA RUTA ENTERA PARA EL MAPA: los gestionados hoy y los que faltan (con
+   * saldo), un renglón por préstamo. El orden lo pone `ordenvisita`.
+   */
+  const clientesMapa: ClienteMapa[] = (() => {
+    const gestionadosIds = new Set(managedToday.map((m) => m.loanId))
+    const aMapa = (c: DisplayClient, gestionado: boolean): ClienteMapa => ({
+      loanId: c.loanId,
+      nombre: c.nombre,
+      detalle: `Cuota ${fmtMoneda(c.valorCuota)} · saldo ${fmtMoneda(c.saldo)}`,
+      ordenvisita: c.ordenvisita,
+      lat: c.clienteLatitud ?? null,
+      lng: c.clienteLongitud ?? null,
+      gestionado,
+    })
+    return [
+      ...managedToday.map((m) => aMapa(m, true)),
+      ...clients.filter((c) => !gestionadosIds.has(c.loanId) && c.saldo > 0).map((c) => aMapa(c, false)),
+    ]
+  })()
+
   const aplazadosComoGestion: ManagedClient[] = sinGestionar
     .filter((c) => aplazados.has(c.loanId))
     .map((c) => ({
@@ -4166,6 +4192,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                       if (activeTab === "aplazados") return `Pendientes · ${aplazadosDeLaRuta.length}`
                       if (activeTab === "gestionados") return `Gestionados · ${filteredManaged.length}`
                       if (activeTab === "ventas") return `Ventas del día · ${salesTodayCount}`
+                      if (activeTab === "mapa") return `Mapa de la ruta · ${clientesMapa.length}`
                       return `Pendientes · ${isDiario ? "Diario" : "No Diario"} · ${displayClients.length}${
                         moraFilter ? " · filtrado por mora" : ""
                       }`
@@ -4180,6 +4207,20 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
             <div className={`${ocultoEnMovil()} flex flex-col md:flex-row md:items-center md:justify-between gap-2`}>
               <div className="flex items-center gap-2">
                 <CardTitle className="text-base md:text-2xl">Clientes Activos</CardTitle>
+                {/* CLIENTES ACTIVOS = el MISMO número del Resumen del Día:
+                    clientes distintos con préstamo activo en la ruta
+                    (lib/use-clientes-asignados). La lista de abajo es otra
+                    cosa —los préstamos a trabajar HOY— y por eso su avance
+                    dice "gestionados hoy". */}
+                {clientesActivos != null && (
+                  <span
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-bold text-brand md:text-xs"
+                    title="Clientes con préstamo activo en la ruta (el mismo número del Resumen del Día)"
+                  >
+                    <Users className="h-3.5 w-3.5" />
+                    {clientesActivos}
+                  </span>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"
@@ -4287,7 +4328,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                 <div className={`${ocultoEnMovil()} px-1 pb-2 space-y-1`}>
                   <div className="flex items-baseline justify-between text-[11px] md:text-xs">
                     <span className="text-muted-foreground">
-                      <strong className="text-foreground">{gestionados}</strong> de {total} gestionados
+                      <strong className="text-foreground">{gestionados}</strong> de {total} gestionados hoy
                     </span>
                     <span className="font-semibold tabular-nums">
                       ${recaudado.toLocaleString("es-CO")}
@@ -4354,7 +4395,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                 midan igual: un `grid-cols-4` con `gap` reparte el ancho en
                 cuartos exactos, pase lo que pase con los números. */}
             <div className={`${ocultoEnMovil()} mt-2 w-full`}>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-5 gap-1.5">
                 {([
                   {
                     id: "pendientes" as const,
@@ -4389,6 +4430,15 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                     Icono: ShoppingCart,
                     color: "text-green-600",
                     n: salesTodayCount,
+                  },
+                  {
+                    // LA RUTA EN EL MAPA: todos los clientes en el orden de
+                    // "Ordenar Ruta", con su ubicación y el recorrido.
+                    id: "mapa" as const,
+                    nombre: "Mapa de la ruta",
+                    Icono: MapIcon,
+                    color: "text-brand",
+                    n: clientesMapa.length,
                   },
                 ]).map(({ id, nombre, Icono, color, n }) => {
                   const activa = activeTab === id
@@ -4425,7 +4475,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
               {/* El subrayado de la activa. Va en su propia rejilla de cuatro
                   para caer justo debajo de su pestaña, y sobre la línea gris
                   que separa la cabecera del listado. */}
-              <div className="mt-1.5 grid grid-cols-4 gap-1.5 border-b border-border">
+              <div className="mt-1.5 grid grid-cols-5 gap-1.5 border-b border-border">
                 {TAB_ORDER.map((t) => (
                   <span
                     key={t}
@@ -4948,6 +4998,15 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
               fechaJornada={esDiaAtrasado ? diaDeTrabajo : null}
             />
           </div>{/* fin Panel 2: Ventas */}
+
+          {/* ── Panel 3: Mapa de la ruta ─────────────────────────────────── */}
+          {/* Se monta SOLO con la pestaña abierta: Leaflet no mide bien un
+              mapa oculto. */}
+          {activeTab === "mapa" && (
+            <div className="w-full shrink-0 p-2 md:p-6">
+              <PagosMapaRuta clientes={clientesMapa} />
+            </div>
+          )}
 
           </div>{/* fin flex deslizable */}
           </div>{/* fin overflow-hidden */}
