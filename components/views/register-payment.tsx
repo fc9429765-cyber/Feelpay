@@ -2849,6 +2849,10 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     // vive a nivel de modulo: la lista de cobro usa el mismo, para que el
     // papel y la pantalla no digan cosas distintas del mismo cliente.
     const datosCliente = clientRes.data as { nombre_completo?: string | null; apodo?: string | null } | null
+    // El avance en cuotas sale del estado YA recalculado tras el pago, no de
+    // la foto que tenía la pantalla antes de cobrar.
+    const cuotasTotales = finRow?.cuotas_totales ?? client.cuotasTotales
+    const totalPagadoAhora = Number(finRow?.total_pagado ?? client.abonado) || 0
     const nombreCompleto = datosCliente?.nombre_completo
       ? sinApodo(datosCliente.nombre_completo, datosCliente.apodo)
       : client.nombre
@@ -2860,19 +2864,45 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
     // cerrar una jornada vieja es ese día y no hoy. Si leyera hoy, el
     // comprobante del cobro que se acaba de registrar saldría sin abono.
     let fechaAbono: string | null = gestionHoy ? diaDeTrabajo : null
-    if (abonoHoy == null) {
-      // Del libro de eventos: los movimientos de ese día de este préstamo.
-      const { data: eventosHoy } = await supabase
-        .from("gestiones")
-        .select("tipo, monto")
-        .eq("loan_id", client.loanId)
-        .eq("fecha_gestion", diaDeTrabajo)
-        .eq("estado", "aplicada")
-      const evs = (eventosHoy ?? []) as { tipo: string; monto: number | null }[]
-      if (evs.length > 0) {
-        abonoHoy = evs.reduce((acc, e) => acc + montoEfectivo({ tipo: e.tipo as Gestion["tipo"], monto: Number(e.monto) || 0 }), 0)
-        fechaAbono = diaDeTrabajo
-      }
+    // Del libro de eventos: los movimientos de ese día de este préstamo. Se
+    // leen SIEMPRE, también con el cliente ya gestionado, porque de acá sale
+    // cuánto fue en efectivo y cuánto por transferencia.
+    const { data: eventosHoy } = await supabase
+      .from("gestiones")
+      .select("tipo, monto, metodo_pago, referencia_gestion_id")
+      .eq("loan_id", client.loanId)
+      .eq("fecha_gestion", diaDeTrabajo)
+      .eq("estado", "aplicada")
+    const evs = (eventosHoy ?? []) as {
+      tipo: string; monto: number | null; metodo_pago: string | null; referencia_gestion_id: string | null
+    }[]
+    if (abonoHoy == null && evs.length > 0) {
+      abonoHoy = evs.reduce((acc, e) => acc + montoEfectivo({ tipo: e.tipo as Gestion["tipo"], monto: Number(e.monto) || 0 }), 0)
+      fechaAbono = diaDeTrabajo
+    }
+
+    // EFECTIVO Y TRANSFERENCIA DEL PAGO, con la MISMA regla del resumen del
+    // día: cada evento por su forma de pago, y la reversa con la del pago que
+    // anula. Si el pago todavía está en la cola (sin señal) no hay eventos:
+    // se usa la forma con la que se cobró, si fue una sola.
+    let pagoEfectivo = 0
+    let pagoTransferencia = 0
+    const refIds = [...new Set(evs.map((e) => e.referencia_gestion_id).filter((x): x is string => !!x))]
+    const metodoRef = new Map<string, string | null>()
+    if (refIds.length) {
+      const { data: refs } = await supabase.from("gestiones").select("id, metodo_pago").in("id", refIds)
+      for (const r of (refs ?? []) as { id: string; metodo_pago: string | null }[]) metodoRef.set(r.id, r.metodo_pago)
+    }
+    for (const e of evs) {
+      const monto = montoEfectivo({ tipo: e.tipo as Gestion["tipo"], monto: Number(e.monto) || 0 })
+      if (!monto) continue
+      const metodo = (e.metodo_pago || (e.referencia_gestion_id ? metodoRef.get(e.referencia_gestion_id) : null) || "efectivo").toLowerCase()
+      if (metodo === "transferencia") pagoTransferencia += monto
+      else pagoEfectivo += monto
+    }
+    if (evs.length === 0 && abonoHoy != null && abonoHoy > 0) {
+      if (gestionHoy?.metodoPago === "transferencia") pagoTransferencia = abonoHoy
+      else if (gestionHoy?.metodoPago !== "mixto") pagoEfectivo = abonoHoy
     }
 
     // ¿SE RENOVÓ ESE DÍA? Sale del libro (el evento `ajuste` de la
@@ -2940,10 +2970,11 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
 
     // ── LO QUE DICE EL COMPROBANTE, EN BLOQUES ─────────────────────────────
     // El formato que pidió el dueño: datos del cliente, el pago que se hizo
-    // y el resumen de la obligación. Cada bloque es
+    // (con su efectivo y transferencia), la cuota actual y el resumen de la
+    // obligación. Cada bloque es
     // una caja con su título, y lo que el cliente busca —cuánto pagó, cuánto
     // le falta de la cuota y cuánto debe— va en grande.
-    type FilaRecibo = { label: string; valor: string; fuerte?: boolean; banda?: boolean }
+    type FilaRecibo = { label: string; valor: string; fuerte?: boolean; banda?: boolean; negrita?: boolean }
     const secciones: { titulo: string; filas: FilaRecibo[] }[] = [
       {
         titulo: "Datos del cliente",
@@ -2962,6 +2993,10 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
         filas: [
           { label: "Fecha del abono:", valor: fmtFechaCorta(fechaAbono) },
           { label: "Valor pagado:", valor: fmt(abonoHoy), fuerte: true },
+          // Cómo se pagó: el efectivo y la transferencia, cada uno con su
+          // monto. Solo se imprime la forma que tuvo plata.
+          ...(pagoEfectivo > 0 ? [{ label: "Efectivo:", valor: fmt(pagoEfectivo), negrita: true }] : []),
+          ...(pagoTransferencia > 0 ? [{ label: "Transferencia:", valor: fmt(pagoTransferencia), negrita: true }] : []),
         ],
       })
     }
@@ -2979,9 +3014,16 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
       })
     }
 
-    // "CUOTA ACTUAL" SALIÓ DEL COMPROBANTE (02-oct-2026, a pedido del dueño):
-    // cuotas X/Y, restante y frecuencia. Quedan los datos del cliente, el
-    // pago, la renovación si la hubo y el resumen de la obligación.
+    // CUOTA ACTUAL: en qué cuota va (con decimal: "1.3 / 20") y la
+    // frecuencia. Volvió el 05-oct-2026 a pedido del dueño, sin el renglón de
+    // "Restante" (no está en el formato que mandó).
+    secciones.push({
+      titulo: "Cuota actual",
+      filas: [
+        { label: "Cuotas:", valor: `${cuotasConDecimal(totalPagadoAhora, client.valorCuota, cuotasTotales)} / ${cuotasTotales}` },
+        { label: "Frecuencia:", valor: frecuenciaLabel(client.frecuenciaPago) },
+      ],
+    })
 
     secciones.push({
       titulo: "Resumen de la obligación",
@@ -3143,8 +3185,10 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
         ctx.textAlign = "left"
         ctx.fillText(f.label, PAD + 2, base)
         const anchoLibre = X1 - X0 - 20 - ctx.measureText(f.label).width - 10
-        ctx.font = `${f.fuerte ? "bold 17px" : "12.5px"} ${FUENTE}`
-        ctx.fillStyle = f.fuerte ? NAVY : TEXTO
+        // `negrita`: el monto en negrita al tamaño normal (efectivo y
+        // transferencia, debajo del valor pagado).
+        ctx.font = `${f.fuerte ? "bold 17px" : f.negrita ? "bold 12.5px" : "12.5px"} ${FUENTE}`
+        ctx.fillStyle = f.fuerte || f.negrita ? NAVY : TEXTO
         ctx.textAlign = "right"
         // El ancho máximo evita que un nombre largo se monte sobre la
         // etiqueta o se salga: el navegador lo condensa para que quepa.
