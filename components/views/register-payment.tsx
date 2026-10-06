@@ -4808,6 +4808,17 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                               <XCircle className="h-3.5 w-3.5" />No pago
                             </span>
                           )}
+                          {/* CANCELADO: el pago de hoy dejó el crédito en cero.
+                              Se mira el SALDO y no el estado del préstamo, así
+                              sale igual con lo que viene de la base y con lo
+                              que se acaba de cobrar en el teléfono (sin señal
+                              incluido). */}
+                          {m.gestionTipo === "pago" && m.saldo <= 0 && (
+                            <span className="inline-flex items-center gap-1 text-[12px] font-bold text-brand bg-brand/10 px-2 py-1 rounded-full shrink-0">
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              Cancelado
+                            </span>
+                          )}
                           {/* TRANSFERENCIA: SOLO EL ICONO, y más grande.
                               La palabra se llevaba unos 90px de un renglón que
                               ya lleva la insignia del pago y la hora, y no
