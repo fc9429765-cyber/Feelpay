@@ -110,7 +110,9 @@ export const ALL_MODULES: ModuleDefinition[] = [
     label: "Monitoreo de Rutas",
     mobileLabel: "Monitor",
     description: "Monitorear el estado de rutas en tiempo real",
-    defaultRoles: ["admin", "administrador"],
+    // Secretaría también: es su pantalla de inicio (06-oct-2026). Ve las
+    // rutas que tiene asignadas (ver ROLES_QUE_VEN_TODO en el monitor).
+    defaultRoles: ["admin", "administrador", "secretaria", "secretario"],
     defaultMobileNavRoles: ["admin", "administrador"],
     iconName: "Route",
     group: "Administrador",

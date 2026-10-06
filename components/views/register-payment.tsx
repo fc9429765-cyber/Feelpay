@@ -5107,10 +5107,44 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
               m = saldo
             }
             setPaymentAmount(m > 0 ? String(m) : "")
-            if (dosFormas) setMontoEfectivoMixto((c) => String(Math.min(Number.parseFloat(c) || 0, m)))
+            // En mixto NO se toca el efectivo: la transferencia es lo que
+            // falta (`transfMixto`). Antes se recortaba el efectivo al monto
+            // en cada tecla, y al escribir 30.000 quedaba en 3 —el monto valía
+            // 3 al teclear el primer dígito—.
+            recalcularCuotas(m)
+          }
+          const recalcularCuotas = (m: number) => {
             if (!isPartialPayment && cuotaRef > 0) {
               setNumCuotas(Math.min(cuotasQueLeQuedan, Math.max(1, Math.round(m / cuotaRef))))
             }
+          }
+          /**
+           * PAGO MIXTO: EL MONTO ES LA SUMA DE LAS DOS PARTES.
+           *
+           * Antes la transferencia salía sola (monto − efectivo) y el monto
+           * quedaba en el de la cuota: para cobrar MÁS que la cuota había que
+           * acordarse de cambiar primero el monto, y si se escribía directo un
+           * efectivo mayor salía "El efectivo no puede superar el monto". Ahora
+           * se escriben las dos partes y el monto del pago se arma solo.
+           */
+          const cambiarParteMixto = (cual: "ef" | "tr", texto: string) => {
+            const valor = Number.parseFloat(leerMonto(texto)) || 0
+            const otra = cual === "ef" ? transfMixto : efectivoMixto
+            let total = valor + otra
+            let propia = valor
+            if (total > saldo) {
+              toast({
+                title: "Monto excede el saldo",
+                description: `Entre las dos partes no pueden pasar del saldo a pagar ($${Math.round(saldo).toLocaleString("es-CO")})`,
+                variant: "destructive",
+              })
+              propia = Math.max(0, saldo - otra)
+              total = propia + otra
+            }
+            if (cual === "ef") setMontoEfectivoMixto(propia > 0 ? String(propia) : "")
+            else setMontoEfectivoMixto(String(efectivoMixto))
+            setPaymentAmount(total > 0 ? String(total) : "")
+            recalcularCuotas(total)
           }
           const cambiarCuotas = (valor: string) => {
             const n = Number.parseInt(valor)
@@ -5284,16 +5318,17 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                     </div>
                   </div>
 
-                  {/* PAGO EN DOS MEDIOS: se escribe el efectivo y la
-                      transferencia es lo que falta. En el libro son dos
-                      eventos, uno por forma (ver `dosFormas`). */}
+                  {/* PAGO EN DOS MEDIOS: se escriben las dos partes y el monto
+                      es la suma (o se escribe el monto y la transferencia es
+                      lo que falta). En el libro son dos eventos, uno por forma
+                      (ver `dosFormas`). */}
                   {dosFormas && (
                     <div className="rp-panel">
                       <div className="rp-panel-head">
                         <PieChart size={26} fill="#1f5fc4" color="#1f5fc4" strokeWidth={1.75} style={{ flex: "none", marginTop: 2 }} />
                         <div>
                           <div className="rp-panel-title">Pago en dos medios</div>
-                          <div className="rp-panel-sub">Ingresá cuánto se cobra en cada medio.</div>
+                          <div className="rp-panel-sub">Ingresá cuánto se cobra en cada medio: el monto del pago es la suma.</div>
                         </div>
                       </div>
                       <div className="rp-row2 rp-row2--tight">
@@ -5307,7 +5342,7 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                               type="text"
                               inputMode="numeric"
                               value={sinSigno(mostrarMonto(montoEfectivoMixto))}
-                              onChange={(e) => setMontoEfectivoMixto(leerMonto(e.target.value))}
+                              onChange={(e) => cambiarParteMixto("ef", e.target.value)}
                               className={`rp-in rp-in--ico${errorMixto ? " rp-in--err" : ""}`}
                             />
                           </span>
@@ -5319,14 +5354,21 @@ export function RegisterPayment({ onViewChange, currentRutaId = 1, rutaPais = ""
                             <span className="rp-abs" style={{ left: 58 }}>$</span>
                             <input
                               id="montoTransfMixto"
-                              readOnly
-                              value={Math.round(transfMixto).toLocaleString("es-CO")}
+                              type="text"
+                              inputMode="numeric"
+                              value={transfMixto > 0 ? Math.round(transfMixto).toLocaleString("es-CO") : ""}
+                              placeholder="0"
+                              onChange={(e) => cambiarParteMixto("tr", e.target.value)}
                               className="rp-in rp-in--ico"
                             />
                           </span>
                         </label>
                       </div>
-                      {errorMixto && <span className="rp-err">El efectivo no puede superar el monto del pago.</span>}
+                      {errorMixto && (
+                        <span className="rp-err">
+                          El efectivo supera el monto del pago: escribe la transferencia o corrige el monto.
+                        </span>
+                      )}
                       {selectorCuenta}
                     </div>
                   )}

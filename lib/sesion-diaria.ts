@@ -148,8 +148,20 @@ export function sesionVencioPorInactividad(haySesion: boolean): boolean {
   return quieta > INACTIVIDAD_MS
 }
 
+/**
+ * LAS SECRETARIAS NO CADUCAN (06-oct-2026, a pedido del dueño). Trabajan en
+ * la oficina con el Monitoreo de Rutas abierto en pantalla, mirando sin tocar:
+ * ni el cambio de día ni las dos horas quietas tienen sentido ahí. Salen solo
+ * cuando tocan "Cerrar sesión".
+ */
+const ROLES_SIN_CADUCIDAD = new Set(["secretaria", "secretario"])
+export function sesionSinCaducidad(rol: string | null | undefined): boolean {
+  return ROLES_SIN_CADUCIDAD.has((rol ?? "").toLowerCase().trim())
+}
+
 /** El motivo por el que hay que volver a entrar, o `null` si no hace falta. */
-export function motivoDeCaducidad(haySesion: boolean): "dia" | "inactividad" | null {
+export function motivoDeCaducidad(haySesion: boolean, rol?: string | null): "dia" | "inactividad" | null {
+  if (haySesion && sesionSinCaducidad(rol)) return null
   if (sesionVencioPorDia(haySesion)) return "dia"
   if (sesionVencioPorInactividad(haySesion)) return "inactividad"
   return null

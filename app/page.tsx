@@ -230,7 +230,10 @@ export default function Page() {
         // comprueba ANTES de hidratar nada: si se hidratara primero y se
         // cerrara después, habría un parpadeo del dashboard con los datos de
         // la sesión vieja. Ver `lib/sesion-diaria.ts`.
-        const motivo = rawUser ? motivoDeCaducidad(true) : null
+        // Las secretarias no caducan (ver `sesionSinCaducidad`).
+        let rolGuardado: string | null = null
+        try { rolGuardado = rawUser ? (JSON.parse(rawUser) as AuthenticatedUser).rol ?? null : null } catch { /* ilegible */ }
+        const motivo = rawUser ? motivoDeCaducidad(true, rolGuardado) : null
         if (motivo) {
           try {
             localStorage.removeItem(USER_STORAGE_KEY)
@@ -295,7 +298,10 @@ export default function Page() {
                 setCurrentView("admin-dashboard")
               } else if (rol === "liquidador") {
                 setCurrentView("admin-reportes")
-              } else if (["gerencia", "secretaria", "secretario"].includes(rol)) {
+              } else if (["secretaria", "secretario"].includes(rol)) {
+                // La pantalla de inicio de secretaría es el Monitoreo de Rutas.
+                setCurrentView("admin-route-monitor")
+              } else if (rol === "gerencia") {
                 setCurrentView("secretary-reports")
               } else if (rol === "socioadmin") {
                 setCurrentView("socio-admin-reportes")
@@ -706,6 +712,8 @@ export default function Page() {
 
       const rolLower = (user.rol ?? "").toLowerCase()
       const isSecretariaOrGerencia = ["secretaria", "secretario", "gerencia"].includes(rolLower)
+      // La pantalla de inicio de secretaría es el Monitoreo de Rutas (06-oct-2026).
+      const isSecretaria = ["secretaria", "secretario"].includes(rolLower)
       const isSocioadmin = rolLower === "socioadmin"
 
       if (rutasData.length > 0) {
@@ -713,7 +721,8 @@ export default function Page() {
         try { localStorage.setItem(RUTA_STORAGE_KEY, JSON.stringify(ruta)) } catch {}
         setSelectedRuta(ruta)
         setShowRutaSelector(false)
-        if (isSecretariaOrGerencia) setCurrentView("secretary-reports")
+        if (isSecretaria) setCurrentView("admin-route-monitor")
+        else if (isSecretariaOrGerencia) setCurrentView("secretary-reports")
         else if (isSocioadmin) setCurrentView("socio-admin-reportes")
         // Vendedores y cobradores: SIEMPRE a Registrar Pago. Se pone
         // explicito y no se confia en el valor inicial del estado: cuando
@@ -726,7 +735,8 @@ export default function Page() {
         try { localStorage.removeItem(RUTA_STORAGE_KEY) } catch {}
         setSelectedRuta(null)
         setShowRutaSelector(false)
-        if (isSecretariaOrGerencia) setCurrentView("secretary-reports")
+        if (isSecretaria) setCurrentView("admin-route-monitor")
+        else if (isSecretariaOrGerencia) setCurrentView("secretary-reports")
         else if (isSocioadmin) setCurrentView("socio-admin-reportes")
         else setCurrentView("register-payment")
       }
@@ -845,7 +855,7 @@ export default function Page() {
 
     const revisar = () => {
       if (document.visibilityState === "hidden") return
-      const motivo = motivoDeCaducidad(true)
+      const motivo = motivoDeCaducidad(true, currentUser.rol)
       if (!motivo) return
       setAvisoSesion(mensajeDeCaducidad(motivo))
       // Por inactividad se conserva el cache de lectura (ver arriba).
