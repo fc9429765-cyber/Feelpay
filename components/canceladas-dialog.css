@@ -1,0 +1,17 @@
+/* Créditos cancelados hoy (components/canceladas-dialog.tsx).
+   LA REGLA DE TODAS LAS VISTAS: el armado del diseño no cambia con el ancho.
+   En un teléfono angosto la lista se reduce en proporción con `zoom`
+   (container query sobre el diálogo); el armado entra entero desde 480px. */
+.cd-wrap { container: cd / inline-size; }
+.cd-frame { --k: 1; zoom: var(--k); width: calc(100cqw / var(--k)); }
+@container cd (max-width: 479px) { .cd-frame { --k: 0.958; } }
+@container cd (max-width: 459px) { .cd-frame { --k: 0.917; } }
+@container cd (max-width: 439px) { .cd-frame { --k: 0.875; } }
+@container cd (max-width: 419px) { .cd-frame { --k: 0.833; } }
+@container cd (max-width: 399px) { .cd-frame { --k: 0.792; } }
+@container cd (max-width: 379px) { .cd-frame { --k: 0.750; } }
+@container cd (max-width: 359px) { .cd-frame { --k: 0.708; } }
+@container cd (max-width: 339px) { .cd-frame { --k: 0.667; } }
+@container cd (max-width: 319px) { .cd-frame { --k: 0.625; } }
+@container cd (max-width: 299px) { .cd-frame { --k: 0.583; } }
+@container cd (max-width: 279px) { .cd-frame { --k: 0.550; } }

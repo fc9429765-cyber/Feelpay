@@ -19,6 +19,7 @@ import { getRutaUmbrales } from "@/lib/ruta-umbrales"
 import { aDolares, formatearMoneda } from "@/lib/monedas"
 import { Bandera } from "@/components/bandera"
 import { DetalleClientesDialog } from "@/components/detalle-clientes-dialog"
+import { CanceladasDialog } from "@/components/canceladas-dialog"
 import { PagosDelDiaDialog, type FuentePagos } from "@/components/pagos-del-dia-dialog"
 import type { ModoDia } from "@/lib/pagos-del-dia"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -592,6 +593,9 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
    * ojito, repitiendo el MISMO criterio de la vista para que la lista
    * coincida con el monto.
    */
+  /** Los créditos cancelados del día, para su diálogo propio (canceladas-dialog). */
+  const [canceladasIds, setCanceladasIds] = useState<string[] | null>(null)
+
   const abrirDetalleFinanciero = async (cual: "canceladas" | "ventas") => {
     try {
       const supabase = createClient()
@@ -640,7 +644,7 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
         .in("tipo", ["pago", "cancelacion", "abono_venta", "reversa"])
       const candidatos = [...new Set(((movs ?? []) as { loan_id: string }[]).map((g) => g.loan_id))]
       if (candidatos.length === 0) {
-        abrirDetalle("Créditos cancelados hoy", [], { subtitulo: "Ninguno", ocultarFicha: true })
+        setCanceladasIds([])
         return
       }
       const { data: fin } = await supabase
@@ -650,22 +654,10 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
       const ids = ((fin ?? []) as { loan_id: string; saldo: number | null }[])
         .filter((f) => Number(f.saldo ?? 0) <= 0)
         .map((f) => f.loan_id)
-      // CANCELADAS VA CON LA FICHA COMPLETA, como el resto de los ojitos.
-      //
-      // Antes iba con `ocultarFicha`, que deja la tabla en DOS columnas
-      // —nombre y frecuencia— porque se pensó para Ventas: ahí la pregunta es
-      // "qué se vendió hoy y por cuánto", y la ficha del crédito estorba.
-      //
-      // En una cancelación la pregunta es otra: QUIÉN TERMINÓ DE PAGAR y cómo
-      // le fue. Con la ficha se ve la fecha de venta, el %, en cuántas cuotas
-      // lo pagó y su último pago — que es lo mismo que muestra Pagos, No pagos
-      // y Pendientes. Se pidió "el mismo formato del resto del módulo".
-      abrirDetalle("Créditos cancelados hoy", ids, {
-        subtitulo: `${ids.length} ${ids.length === 1 ? "crédito quedó" : "créditos quedaron"} en cero`,
-        // El valor prestado se conserva: en una cancelación es justo lo que se
-        // quiere comparar contra lo que acabó de pagar.
-        mostrarValorVenta: true,
-      })
+      // CANCELADAS TIENE SU PROPIO DIÁLOGO (06-oct-2026): una tarjeta por
+      // crédito con lo que canceló, cómo venía (al día o en mora), las cuotas
+      // y el último pago, y el total abajo. Ver components/canceladas-dialog.
+      setCanceladasIds(ids)
     } catch (err) {
       console.error("[v0] abrirDetalleFinanciero:", err)
     }
@@ -2149,6 +2141,15 @@ export function DailySummary({ onViewChange, rutaId = 1, onRouteStateChange, fec
         marcados={detalleClientes?.marcados}
         mostrarValorVenta={detalleClientes?.mostrarValorVenta}
         ocultarFicha={detalleClientes?.ocultarFicha}
+        moneda={monedaRuta}
+      />
+
+      {/* Los créditos cancelados del día (mismo motivo: fuera de la tarjeta 3D). */}
+      <CanceladasDialog
+        open={canceladasIds !== null}
+        onOpenChange={(v) => { if (!v) setCanceladasIds(null) }}
+        loanIds={canceladasIds ?? []}
+        fecha={diaDelResumen}
         moneda={monedaRuta}
       />
 
