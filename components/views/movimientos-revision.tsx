@@ -45,9 +45,18 @@ import {
 import "./movimientos-revision.css"
 
 type Tipo = "gasto" | "venta" | "abono"
-/** En qué punto del circuito está el movimiento. */
-type EstadoBandeja = "pendiente_mio" | "espera_admin" | "aprobado" | "rechazado"
+/**
+ * En qué punto del circuito está el movimiento.
+ *   pendiente     solicitud sin resolver: la resuelve admin o secretaría
+ *   espera_admin  gasto de caja sobre el límite: el admin (o secretaría en su lugar)
+ *   espera_secre  gasto de caja con la firma de secretaría pendiente
+ *   visto_bueno   solicitud que ya aprobó el admin: falta la firma de
+ *                 secretaría, que no mueve plata (script 129)
+ */
+type EstadoBandeja = "pendiente" | "espera_admin" | "espera_secre" | "visto_bueno" | "aprobado" | "rechazado"
 type Aprobacion = "pendiente" | "aprobado" | "rechazado"
+/** Un paso de la aprobación: el del admin o el de secretaría. "na" = no le tocó. */
+interface Paso { estado: Aprobacion | "na"; quien?: string | null; at?: string | null }
 
 interface Solicitud {
   id: string
@@ -59,10 +68,15 @@ interface Solicitud {
   descripcion: string | null
   payload: Record<string, unknown>
   estado: string
+  revisado_por: number | null
   revisado_por_nombre: string | null
   revisado_at: string | null
   motivo_rechazo: string | null
   created_at: string
+  /** Script 129. `undefined` si todavía no se corrió. */
+  secretaria_estado?: string | null
+  secretaria_por_nombre?: string | null
+  secretaria_at?: string | null
 }
 
 interface MovimientoCaja {
@@ -106,16 +120,20 @@ interface ItemBandeja {
   rutaId: number
   solicitante: string
   monto: number
+  /** Qué ES el movimiento; no cambia con la aprobación ni con el rechazo. */
   estatus: string
+  /** Venta: Nueva / Renovó-Aumentó / Renovó-Bajó. Pago: Abono / Cancelada. */
+  variacion: string
   cuotas: number | null
   mora: number | null
   observacion: string
   fotos: Foto[]
   fecha: string
   estado: EstadoBandeja
+  /** El resumen de los dos pasos: rechazado si alguno rechazó, pendiente si falta alguno. */
   aprobacion: Aprobacion
-  /** Cuándo se resolvió (o se pidió, si sigue pendiente). */
-  fechaAprobacion: string
+  pasoAdmin: Paso
+  pasoSecre: Paso
   /** Renglones extra para el detalle. */
   detalle: [string, string][]
   solicitud?: Solicitud
@@ -132,9 +150,13 @@ const TIPO_META: Record<Tipo, { bg: string; color: string; glyph?: string }> = {
   gasto: { bg: "#ec2027", color: "#d1191f", glyph: "$" },
 }
 const ESTATUS_COLOR: Record<string, string> = {
-  "Canceló": "#e11d24", "Reconsiderando": "#e11d24", "Rechazado": "#e11d24",
-  "Aprobado": "#16a34a", "Nuevo": "#16a34a", "Bajo": "#5a8a1f",
-  "Espera admin": "#e8590c", "Espera secretaría": "#e8590c",
+  "Canceló": "#e11d24", "Reconsiderando": "#e11d24",
+  "Nuevo": "#16a34a", "Renovación": "#1f6fe0",
+  "Sobre límite": "#e8590c", "Sobre umbral": "#e8590c",
+}
+const VARIACION_COLOR: Record<string, string> = {
+  "Nueva": "#16a34a", "Renovó / Aumentó": "#1f6fe0", "Renovó / Bajó": "#e8590c", "Renovó / Igual": "#1d2b5e",
+  "Abono": "#0f8a74", "Cancelada": "#e11d24",
 }
 const AP_META: Record<Aprobacion, { label: string; bg: string; color: string }> = {
   pendiente: { label: "Pendiente", bg: "#fdeedd", color: "#e8590c" },
@@ -158,10 +180,32 @@ const TypeIcon = ({ tipo, size = 42 }: { tipo: Tipo; size?: number }) => {
   const t = TIPO_META[tipo]
   return <Circle size={size} bg={t.bg}>{t.glyph ?? <BarChart3 size={22} strokeWidth={2.6} />}</Circle>
 }
-function ApIcon({ ap }: { ap: Aprobacion }) {
-  if (ap === "aprobado") return <Circle size={30} bg="#0f9f8a"><Check size={18} strokeWidth={3} /></Circle>
-  if (ap === "rechazado") return <Circle size={30} bg="#ec2027"><X size={18} strokeWidth={3} /></Circle>
-  return <Clock size={30} color="#e8590c" strokeWidth={1.8} />
+function ApIcon({ ap, size = 30 }: { ap: Aprobacion; size?: number }) {
+  const s = Math.round(size * 0.6)
+  if (ap === "aprobado") return <Circle size={size} bg="#0f9f8a"><Check size={s} strokeWidth={3} /></Circle>
+  if (ap === "rechazado") return <Circle size={size} bg="#ec2027"><X size={s} strokeWidth={3} /></Circle>
+  return <Clock size={size} color="#e8590c" strokeWidth={1.8} />
+}
+/** Un renglón de la columna de aprobación: quién (Admin / Secretaría) y cómo va. */
+function PasoSello({ titulo, paso }: { titulo: string; paso: Paso }) {
+  if (paso.estado === "na") {
+    return (
+      <span className="mr-paso mr-paso--na">
+        <span className="mr-paso-na">–</span>
+        <span><b>{titulo}</b><small>No aplica</small></span>
+      </span>
+    )
+  }
+  const m = AP_META[paso.estado]
+  return (
+    <span className="mr-paso" style={{ background: m.bg }} title={paso.quien ?? undefined}>
+      <ApIcon ap={paso.estado} size={22} />
+      <span>
+        <b>{titulo} · <i style={{ color: m.color }}>{m.label}</i></b>
+        <small>{paso.at ? `${fmtFecha(paso.at)} ${fmtHora(paso.at)}` : "Falta su firma"}</small>
+      </span>
+    </span>
+  )
 }
 
 type Chip = "todas" | "venta" | "abono" | "gasto" | "aprob"
@@ -186,6 +230,9 @@ export function MovimientosRevision() {
   const [gestiones, setGestiones] = useState<Map<string, GestionRevision>>(new Map())
   const [moraPorLoan, setMoraPorLoan] = useState<Map<string, number>>(new Map())
   const [usuarios, setUsuarios] = useState<Map<number, string>>(new Map())
+  const [rolUsuario, setRolUsuario] = useState<Map<number, string>>(new Map())
+  /** Renovaciones: el valor del crédito anterior del cliente, por solicitud. */
+  const [valorAnterior, setValorAnterior] = useState<Map<string, number>>(new Map())
   const [rutas, setRutas] = useState<Map<number, RutaInfo>>(new Map())
   const [adminsPorRuta, setAdminsPorRuta] = useState<Map<number, string[]>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -250,12 +297,38 @@ export function MovimientosRevision() {
         for (const f of (data ?? []) as { loan_id: string; cuotas_mora: number | null }[]) mora.set(f.loan_id, Number(f.cuotas_mora) || 0)
       }
 
-      // Quién pidió el gasto de caja: `adminid` es un usuario (script 039).
-      const uIds = [...new Set([...caja.values()].map((m) => m.adminid).filter((x): x is number => x != null))]
+      // Quién pidió el gasto de caja (`adminid` es un usuario, script 039) y
+      // quién resolvió cada solicitud: su rol dice si firmó el admin o secretaría.
+      const uIds = [...new Set([
+        ...[...caja.values()].map((m) => m.adminid),
+        ...sols.map((s) => s.revisado_por),
+      ].filter((x): x is number => x != null))]
       const uMap = new Map<number, string>()
+      const rMap = new Map<number, string>()
       if (uIds.length) {
-        const { data } = await sb.from("usuarios").select("id, nombre").in("id", uIds)
-        for (const u of (data ?? []) as { id: number; nombre: string | null }[]) uMap.set(u.id, u.nombre ?? `#${u.id}`)
+        const { data } = await sb.from("usuarios").select("id, nombre, rol").in("id", uIds)
+        for (const u of (data ?? []) as { id: number; nombre: string | null; rol: string | null }[]) {
+          uMap.set(u.id, u.nombre ?? `#${u.id}`)
+          rMap.set(u.id, (u.rol ?? "").toLowerCase().trim())
+        }
+      }
+
+      // RENOVÓ / AUMENTÓ O BAJÓ: el valor de la renovación contra el del
+      // último crédito del cliente creado ANTES de la solicitud.
+      const renov = sols.filter((s) => s.tipo === "venta" && s.subtipo === "renovacion")
+      const cliIds = [...new Set(renov.map((s) => String((s.payload?.p_cliente as { id?: string } | undefined)?.id ?? "")).filter(Boolean))]
+      const prestamos: { client_id: string; valor: number; fecha_creacion: string }[] = []
+      for (let i = 0; i < cliIds.length; i += 150) {
+        const { data } = await sb.from("loans").select("client_id, valor, fecha_creacion").in("client_id", cliIds.slice(i, i + 150))
+        prestamos.push(...((data ?? []) as typeof prestamos))
+      }
+      const anterior = new Map<string, number>()
+      for (const s of renov) {
+        const cli = String((s.payload?.p_cliente as { id?: string } | undefined)?.id ?? "")
+        const previo = prestamos
+          .filter((l) => l.client_id === cli && l.fecha_creacion < s.created_at)
+          .sort((a, b) => b.fecha_creacion.localeCompare(a.fecha_creacion))[0]
+        if (previo) anterior.set(s.id, Number(previo.valor) || 0)
       }
 
       const admins = new Map<number, string[]>()
@@ -272,6 +345,8 @@ export function MovimientosRevision() {
       setGestiones(gMap)
       setMoraPorLoan(mora)
       setUsuarios(uMap)
+      setRolUsuario(rMap)
+      setValorAnterior(anterior)
       setRutas(new Map(((rRutas.data ?? []) as RutaInfo[]).map((r) => [r.id, r])))
       setAdminsPorRuta(admins)
     } catch (err) {
@@ -285,6 +360,12 @@ export function MovimientosRevision() {
   useEffect(() => { void fetchTodo() }, [fetchTodo])
 
   // ── Normalización de las dos fuentes ───────────────────────────────────
+  /** El resumen de los dos pasos para la columna, los chips y el orden. */
+  const resumir = (a: Paso, s: Paso): Aprobacion =>
+    a.estado === "rechazado" || s.estado === "rechazado" ? "rechazado"
+    : a.estado === "pendiente" || s.estado === "pendiente" ? "pendiente"
+    : "aprobado"
+
   const bandeja = useMemo<ItemBandeja[]>(() => {
     const desdeRevision: ItemBandeja[] = solicitudes
       // Un gasto aprobado ya existe como movimiento real en `gastosregistros`
@@ -292,7 +373,35 @@ export function MovimientosRevision() {
       .filter((s) => !(s.tipo === "gasto" && s.estado === "aprobado"))
       .map((s) => {
         const p = s.payload ?? {}
-        const aprob: Aprobacion = s.estado === "pendiente" ? "pendiente" : s.estado === "rechazado" ? "rechazado" : "aprobado"
+        // LOS DOS PASOS. La solicitud la resuelve el primero que llega; si fue
+        // el admin y la aprobó, secretaría todavía tiene que dar su firma.
+        const resuelta = s.estado !== "pendiente"
+        const decision: Aprobacion = s.estado === "rechazado" ? "rechazado" : "aprobado"
+        const porAdmin = resuelta && ROLES_ADMIN.has(s.revisado_por != null ? rolUsuario.get(s.revisado_por) ?? "" : "")
+        const firmaSecre = s.secretaria_estado
+        let pasoAdmin: Paso
+        let pasoSecre: Paso
+        if (!resuelta) {
+          pasoAdmin = { estado: "pendiente" }
+          pasoSecre = { estado: "pendiente" }
+        } else if (porAdmin) {
+          pasoAdmin = { estado: decision, quien: s.revisado_por_nombre, at: s.revisado_at }
+          pasoSecre =
+            firmaSecre === "aprobado" || firmaSecre === "rechazado"
+              ? { estado: firmaSecre, quien: s.secretaria_por_nombre, at: s.secretaria_at }
+              // Lo histórico (antes del 129) y lo que el admin rechazó no le toca.
+              : firmaSecre === "NA" || decision === "rechazado" ? { estado: "na" }
+              : { estado: "pendiente" }
+        } else {
+          // La resolvió secretaría directamente: esa es la única firma.
+          pasoAdmin = { estado: "na" }
+          pasoSecre = { estado: decision, quien: s.revisado_por_nombre, at: s.revisado_at }
+        }
+        const estado: EstadoBandeja =
+          !resuelta ? "pendiente"
+          : decision === "rechazado" || pasoSecre.estado === "rechazado" ? "rechazado"
+          : pasoSecre.estado === "pendiente" ? "visto_bueno"
+          : "aprobado"
         const base = {
           key: `sr:${s.id}`,
           origen: "revision" as const,
@@ -301,12 +410,13 @@ export function MovimientosRevision() {
           solicitante: s.solicitado_por_nombre ?? D,
           monto: Number(s.monto ?? 0),
           fecha: s.created_at,
-          estado: (s.estado === "pendiente" ? "pendiente_mio" : aprob === "rechazado" ? "rechazado" : "aprobado") as EstadoBandeja,
-          aprobacion: aprob,
-          fechaAprobacion: s.revisado_at ?? s.created_at,
+          estado,
+          aprobacion: resumir(pasoAdmin, pasoSecre),
+          pasoAdmin,
+          pasoSecre,
           solicitud: s,
         }
-        const resuelto: [string, string][] = s.estado === "pendiente" ? [] : [
+        const resuelto: [string, string][] = !resuelta ? [] : [
           ["Resuelto por", s.revisado_por_nombre ?? D],
           ...(s.motivo_rechazo ? [["Motivo del rechazo", s.motivo_rechazo] as [string, string]] : []),
         ]
@@ -318,15 +428,27 @@ export function MovimientosRevision() {
             ...(cli.cedula_image_url ? [{ url: String(cli.cedula_image_url), label: "Cédula" }] : []),
             ...(cli.foto_local_url ? [{ url: String(cli.foto_local_url), label: "Local" }] : []),
           ]
+          const esRenov = s.subtipo === "renovacion"
+          const previo = valorAnterior.get(s.id)
+          const monto = Number(s.monto ?? 0)
+          const variacion = !esRenov ? "Nueva"
+            : previo == null ? "Renovó"
+            : monto > previo ? "Renovó / Aumentó"
+            : monto < previo ? "Renovó / Bajó"
+            : "Renovó / Igual"
           return {
             ...base,
             etiqueta: "Venta",
-            estatus: s.estado === "rechazado" ? "Rechazado" : s.subtipo === "renovacion" ? "Renovación" : "Nuevo",
+            estatus: esRenov ? "Renovación" : "Nuevo",
+            variacion,
             cuotas: Number(loan.numero_cuotas) || null,
             mora: null,
-            observacion: s.descripcion ?? "",
+            // La venta no lleva nota del vendedor.
+            observacion: "",
             fotos,
             detalle: [
+              ["Cliente", s.descripcion ?? D],
+              ...(esRenov && previo != null ? [["Crédito anterior", formatearMoneda(previo, rutas.get(s.ruta_id)?.moneda)] as [string, string]] : []),
               ["Cuotas", loan.numero_cuotas ? `${loan.numero_cuotas} de ${loan.valor_cuota ?? D}` : D],
               ["Interés", loan.tasa_interes != null ? `${loan.tasa_interes}%` : D],
               ["Entrega", String(loan.tipo_venta ?? "efectivo")],
@@ -337,15 +459,18 @@ export function MovimientosRevision() {
         if (s.tipo === "abono") {
           const g = gestiones.get(String((p as { gestion_id?: string }).gestion_id ?? ""))
           const foto = g?.detalle?.foto_url ? [{ url: String(g.detalle.foto_url), label: "Foto del pago" }] : []
+          const cancela = g?.tipo === "cancelacion"
           return {
             ...base,
             etiqueta: "Pago",
-            estatus: s.estado === "rechazado" ? "Rechazado" : g?.tipo === "cancelacion" ? "Canceló" : s.estado === "pendiente" ? "Reconsiderando" : "Aprobado",
+            estatus: cancela ? "Canceló" : "Reconsiderando",
+            variacion: cancela ? "Cancelada" : "Abono",
             cuotas: g?.num_cuotas ?? null,
             mora: g?.loan_id ? moraPorLoan.get(g.loan_id) ?? null : null,
-            observacion: [g?.motivo_revision, g?.observacion].filter(Boolean).join(" · ") || (s.descripcion ?? ""),
+            // Solo la nota que escribió quien cobró; el motivo del sistema va al detalle.
+            observacion: (g?.observacion ?? "").trim(),
             fotos: foto,
-            detalle: [["Detalle", s.descripcion ?? D], ...resuelto],
+            detalle: [["Por qué entró a revisión", g?.motivo_revision || s.descripcion || D], ...resuelto],
           }
         }
         // Gasto / ingreso / retiro por el umbral de la ruta.
@@ -353,22 +478,32 @@ export function MovimientosRevision() {
         return {
           ...base,
           etiqueta: tipoReal,
-          estatus: s.estado === "rechazado" ? "Rechazado" : "Espera secretaría",
+          estatus: "Sobre umbral",
+          variacion: tipoReal,
           cuotas: null,
           mora: null,
-          observacion: [String((p as { concepto?: string }).concepto ?? ""), String((p as { observacion?: string }).observacion ?? "")].filter(Boolean).join(" · "),
+          observacion: String((p as { observacion?: string }).observacion ?? "").trim(),
           fotos: (p as { foto?: string }).foto ? [{ url: String((p as { foto?: string }).foto), label: "Comprobante" }] : [],
           detalle: [["Concepto", String((p as { concepto?: string }).concepto ?? D)], ...resuelto],
         }
       })
 
     const desdeCaja: ItemBandeja[] = movimientos.map((m) => {
+      const paso = (estado: string, quien: string | null, at: string | null): Paso =>
+        estado === "por aprobar" ? { estado: "pendiente" }
+        : estado === "aprobado" || estado === "rechazado" ? { estado, quien, at }
+        : { estado: "na" }
+      const pasoAdmin = paso(m.estadoadmin, m.adminaprobo, m.fechahoraaproboadm)
+      // Secretaría puede haber firmado mientras esperaba al admin: su firma
+      // queda en `secretariaaprobo` con `estadosecre` todavía en 'NA'.
+      const pasoSecre = m.estadosecre === "NA" && m.secretariaaprobo
+        ? { estado: "aprobado" as const, quien: m.secretariaaprobo, at: m.fechahoraaprobosecretaria }
+        : paso(m.estadosecre, m.secretariaaprobo, m.fechahoraaprobosecretaria)
       const estado: EstadoBandeja =
         m.estadoadmin === "rechazado" || m.estadosecre === "rechazado" ? "rechazado"
         : m.estadoadmin === "por aprobar" ? "espera_admin"
-        : m.estadosecre === "por aprobar" ? "pendiente_mio"
+        : m.estadosecre === "por aprobar" ? "espera_secre"
         : "aprobado"
-      const aprob: Aprobacion = estado === "rechazado" ? "rechazado" : estado === "aprobado" ? "aprobado" : "pendiente"
       return {
         key: `gr:${m.id}`,
         origen: "caja",
@@ -377,18 +512,19 @@ export function MovimientosRevision() {
         rutaId: m.ruta,
         solicitante: (m.adminid != null ? usuarios.get(m.adminid) : null) ?? D,
         monto: Number(m.valor ?? 0),
-        estatus:
-          estado === "espera_admin" ? "Espera admin"
-          : estado === "pendiente_mio" ? "Espera secretaría"
-          : estado === "rechazado" ? "Rechazado" : "Aprobado",
+        // Pasó al admin porque superó el límite de su ítem; si no, vino por
+        // el umbral de la ruta.
+        estatus: m.estadoadmin !== "NA" ? "Sobre límite" : "Sobre umbral",
+        variacion: m.tipo || "Gasto",
         cuotas: null,
         mora: null,
-        observacion: [m.concepto, m.observacion].filter(Boolean).join(" · "),
+        observacion: (m.observacion ?? "").trim(),
         fotos: m.foto ? [{ url: m.foto, label: "Comprobante" }] : [],
         fecha: m.fechahorasol,
         estado,
-        aprobacion: aprob,
-        fechaAprobacion: m.fechahoraaprobosecretaria ?? m.fechahoraaproboadm ?? m.fechahorasol,
+        aprobacion: resumir(pasoAdmin, pasoSecre),
+        pasoAdmin,
+        pasoSecre,
         detalle: [
           ["Concepto", m.concepto],
           ["Límite del ítem", m.limite != null ? String(m.limite) : D],
@@ -407,7 +543,7 @@ export function MovimientosRevision() {
       if (pa !== pb) return pa - pb
       return pa === 0 ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha)
     })
-  }, [solicitudes, movimientos, gestiones, moraPorLoan, usuarios])
+  }, [solicitudes, movimientos, gestiones, moraPorLoan, usuarios, rolUsuario, valorAnterior, rutas])
 
   // ── Filtros ────────────────────────────────────────────────────────────
   const ruta = (id: number) => rutas.get(id)
@@ -464,10 +600,29 @@ export function MovimientosRevision() {
       return n
     })
 
-  // ── Acciones (la misma lógica de siempre) ──────────────────────────────
-  const accionable = (i: ItemBandeja) => i.estado === "pendiente_mio" || i.estado === "espera_admin"
+  // ── Acciones ───────────────────────────────────────────────────────────
+  // La firma de secretaría (espera_secre, visto_bueno) es SOLO de secretaría:
+  // si el admin pudiera ponerla, aprobar él bloquearía de nuevo la revisión
+  // de ella, que es justo lo que se pidió corregir (06-oct-2026).
+  const accionable = (i: ItemBandeja) =>
+    i.estado === "pendiente" || i.estado === "espera_admin" ||
+    (!esAdmin && (i.estado === "espera_secre" || i.estado === "visto_bueno"))
+  /** El visto bueno sobre lo que el admin ya aprobó no se rechaza: la plata ya se aplicó (eso se corrige con una reversa). */
+  const rechazable = (i: ItemBandeja) => accionable(i) && i.estado !== "visto_bueno"
   /** Lo que se puede aprobar sin confirmación aparte. */
   const directo = (i: ItemBandeja) => accionable(i) && !(i.estado === "espera_admin" && !esAdmin)
+
+  /**
+   * Deja la firma de secretaría en la solicitud (script 129). Si el script no
+   * se corrió todavía, la aprobación ya quedó hecha igual: solo se avisa en
+   * consola, para no tumbar algo que ya movió plata.
+   */
+  const firmarSecretaria = async (s: Solicitud, decision: "aprobado" | "rechazado", nombre: string) => {
+    const { error } = await createClient().from("solicitudes_revision")
+      .update({ secretaria_estado: decision, secretaria_por_nombre: nombre, secretaria_at: new Date().toISOString() })
+      .eq("id", s.id)
+    if (error) console.warn("[v0] No se pudo dejar la firma de secretaría (¿falta el script 129?):", error.message)
+  }
 
   /** Aplica UN item. Lanza si algo falla. */
   const aprobarUno = async (i: ItemBandeja) => {
@@ -485,6 +640,16 @@ export function MovimientosRevision() {
       return
     }
     const s = i.solicitud!
+    if (i.estado === "visto_bueno") {
+      // El admin ya la aprobó y la plata ya está aplicada: secretaría solo firma.
+      // La guarda `is null` evita pisar la firma si dos pantallas lo hacen a la vez.
+      const { data, error } = await createClient().from("solicitudes_revision")
+        .update({ secretaria_estado: "aprobado", secretaria_por_nombre: nombre, secretaria_at: new Date().toISOString() })
+        .eq("id", s.id).eq("estado", "aprobado").is("secretaria_estado", null).select("id")
+      if (error) throw new Error(/secretaria_/.test(error.message) ? "Falta correr el script 129 en Supabase" : error.message)
+      if (!data || data.length === 0) throw new Error("Este movimiento ya fue firmado por otra persona")
+      return
+    }
     if (s.tipo === "gasto") {
       // Se RECLAMA la solicitud antes de aplicarla: el `.eq("estado",
       // "pendiente")` hace que si dos personas aprueban a la vez, solo una
@@ -501,7 +666,9 @@ export function MovimientosRevision() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ...(s.payload as any),
         idempotencyKey: s.id,
-        aprobadoPorSecretaria: nombre,
+        // Si aprueba el admin, el gasto entra con la firma de secretaría
+        // pendiente; si aprueba secretaría, ya entra firmado.
+        ...(esAdmin ? { esperaSecretaria: true } : { aprobadoPorSecretaria: nombre }),
       })
       if (!result.success) {
         await sb.from("solicitudes_revision")
@@ -512,6 +679,8 @@ export function MovimientosRevision() {
     } else {
       // Venta / abono: RPC atómica (crea el préstamo o aplica el pago).
       await callRpcAtomic("aprobar_solicitud_revision", { solicitud_id: s.id, decision: "aprobado" })
+      // Si aprobó secretaría, esa es su firma; si fue el admin, queda esperándola.
+      if (!esAdmin) await firmarSecretaria(s, "aprobado", nombre)
     }
   }
 
@@ -520,7 +689,10 @@ export function MovimientosRevision() {
     try {
       await aprobarUno(i)
       setSeleccion((p) => { const n = new Set(p); n.delete(i.key); return n })
-      toast({ title: i.estado === "espera_admin" && !esAdmin ? "Aprobado en lugar del admin" : "Movimiento aprobado" })
+      toast({
+        title: i.estado === "espera_admin" && !esAdmin ? "Aprobado en lugar del admin"
+          : i.estado === "visto_bueno" ? "Firma de secretaría registrada" : "Movimiento aprobado",
+      })
       setDetalle(null)
       await fetchTodo()
     } catch (err) {
@@ -556,6 +728,7 @@ export function MovimientosRevision() {
       } else if (i.solicitud) {
         await callRpcAtomic("aprobar_solicitud_revision", { solicitud_id: i.solicitud.id, decision: "rechazado", motivo_rechazo: motivo || null })
       }
+      if (i.solicitud && !esAdmin) await firmarSecretaria(i.solicitud, "rechazado", nombre)
       setSeleccion((p) => { const n = new Set(p); n.delete(i.key); return n })
       toast({ title: "Movimiento rechazado" })
       setDetalle(null)
@@ -612,8 +785,8 @@ export function MovimientosRevision() {
   }).format(ahora).replace(".", "") + " - " + fmtHora(ahora.toISOString())
 
   const HEAD: React.ReactNode[] = [
-    "Ícono / Evento", "Núm. / Unidad", "Solicitante", "Valor", "Estatus", "Cuotas", "Mora", "Observación",
-    <>Adjuntos /<br />Evidencia</>, "Acciones", "Fecha y hora", <>Aprobación<br />Administrativa</>,
+    "Ícono / Evento", "Núm. / Unidad", "Solicitante", "Valor", "Estatus", "Variación", "Cuotas", "Mora", "Observación",
+    <>Adjuntos /<br />Evidencia</>, "Acciones", "Fecha y hora", <>Aprobación<br />Admin · Secretaría</>,
   ]
   const FIELDS: [keyof typeof filtros, string][] = [["pais", "País"], ["ciudad", "Ciudad"], ["admin", "Admin"], ["unid", "Unid"]]
 
@@ -699,7 +872,6 @@ export function MovimientosRevision() {
             ) : (
               visibles.map((i) => {
                 const t = TIPO_META[i.tipo]
-                const ap = AP_META[i.aprobacion]
                 const on = seleccion.has(i.key)
                 const busy = actionKey === i.key
                 const dias = diasEsperando(i.fecha)
@@ -718,6 +890,7 @@ export function MovimientosRevision() {
                     <span className="mr-cell mr-cell--left"><span className="mr-ellipsis" title={i.solicitante}>{i.solicitante}</span></span>
                     <span className="mr-cell mr-num">{plata(i)}</span>
                     <span className="mr-cell" style={{ color: ESTATUS_COLOR[i.estatus] ?? "#14205a" }}>{i.estatus || D}</span>
+                    <span className="mr-cell mr-cell--var" style={{ color: VARIACION_COLOR[i.variacion] ?? "#d1191f" }}>{i.variacion || D}</span>
                     <span className="mr-cell">{i.cuotas ?? D}</span>
                     <span className="mr-cell" style={{ color: (i.mora ?? 0) > 0 ? "#e11d24" : "#14205a" }}>{i.mora ?? D}</span>
                     <span className="mr-cell mr-cell--obs" title={i.observacion}>
@@ -729,12 +902,13 @@ export function MovimientosRevision() {
                         title={i.fotos.length ? `${i.fotos.length} adjunto(s)` : "Sin evidencia"}><Camera size={22} strokeWidth={1.9} /></button>
                     </span>
                     <span className="mr-cell" style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-                      <button type="button" className="mr-round mr-round--rech" disabled={!accionable(i) || busy || aprobandoLote}
+                      <button type="button" className="mr-round mr-round--rech" disabled={!rechazable(i) || busy || aprobandoLote}
                         onClick={() => { setRechazo(i); setMotivo("") }} aria-label="Rechazar"><X size={22} strokeWidth={2.6} /></button>
                       <button type="button" className="mr-round" disabled={!accionable(i) || busy || aprobandoLote}
                         style={{ background: i.aprobacion === "aprobado" ? "#0d6b6b" : "#c4c9d0" }}
                         onClick={() => pedirAprobar(i)} aria-label="Aprobar"
-                        title={i.estado === "espera_admin" && !esAdmin ? "Aprobar en lugar del admin" : "Aprobar"}>
+                        title={i.estado === "espera_admin" && !esAdmin ? "Aprobar en lugar del admin"
+                          : i.estado === "visto_bueno" ? "Firmar como secretaría" : "Aprobar"}>
                         {busy ? <Loader2 size={20} className="animate-spin" /> : <Check size={22} strokeWidth={2.6} />}
                       </button>
                     </span>
@@ -745,11 +919,9 @@ export function MovimientosRevision() {
                         <span style={{ fontSize: 12, fontWeight: 700, color: dias >= 15 ? "#e11d24" : "#e8590c" }}>{dias} días</span>
                       )}
                     </span>
-                    <span className="mr-cell" style={{ padding: "4px 8px" }}>
-                      <span className="mr-ap" style={{ background: ap.bg }}>
-                        <ApIcon ap={i.aprobacion} />
-                        <span><b style={{ color: ap.color }}>{ap.label}</b><small>{fmtHora(i.fechaAprobacion)}</small></span>
-                      </span>
+                    <span className="mr-cell mr-cell--pasos">
+                      <PasoSello titulo="Admin" paso={i.pasoAdmin} />
+                      <PasoSello titulo="Secretaría" paso={i.pasoSecre} />
                     </span>
                   </div>
                 )
@@ -798,7 +970,15 @@ export function MovimientosRevision() {
             <div className="mr-modal-kv">
               <span>Valor</span><b>{plata(detalle)}</b>
               <span>Estatus</span><b style={{ color: ESTATUS_COLOR[detalle.estatus] }}>{detalle.estatus || D}</b>
-              <span>Aprobación</span><b style={{ color: AP_META[detalle.aprobacion].color }}>{AP_META[detalle.aprobacion].label}</b>
+              <span>Variación</span><b style={{ color: VARIACION_COLOR[detalle.variacion] }}>{detalle.variacion || D}</b>
+              {([["Admin", detalle.pasoAdmin], ["Secretaría", detalle.pasoSecre]] as [string, Paso][]).map(([k, p]) => (
+                <span key={k} style={{ display: "contents" }}>
+                  <span>{k}</span>
+                  <b style={{ color: p.estado === "na" ? undefined : AP_META[p.estado].color }}>
+                    {p.estado === "na" ? "No aplica" : AP_META[p.estado].label}{p.quien ? ` · ${p.quien}` : ""}
+                  </b>
+                </span>
+              ))}
               {detalle.cuotas != null && (<><span>Cuotas</span><b>{detalle.cuotas}</b></>)}
               {detalle.mora != null && (<><span>Mora</span><b>{detalle.mora} cuotas</b></>)}
               <span>Observación</span><b>{detalle.observacion || D}</b>
@@ -808,12 +988,15 @@ export function MovimientosRevision() {
               <button type="button" className="mr-btn mr-btn--sec" onClick={() => setDetalle(null)}>Cerrar</button>
               {accionable(detalle) && (
                 <>
-                  <button type="button" className="mr-btn mr-btn--danger" disabled={actionKey === detalle.key}
-                    onClick={() => { setRechazo(detalle); setMotivo("") }}>Rechazar</button>
+                  {rechazable(detalle) && (
+                    <button type="button" className="mr-btn mr-btn--danger" disabled={actionKey === detalle.key}
+                      onClick={() => { setRechazo(detalle); setMotivo("") }}>Rechazar</button>
+                  )}
                   <button type="button" className="mr-btn mr-btn--ok" disabled={actionKey === detalle.key}
                     onClick={() => pedirAprobar(detalle)}>
                     {actionKey === detalle.key ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-                    {detalle.estado === "espera_admin" && !esAdmin ? "Aprobar en lugar del admin" : "Aprobar"}
+                    {detalle.estado === "espera_admin" && !esAdmin ? "Aprobar en lugar del admin"
+                      : detalle.estado === "visto_bueno" ? "Firmar como secretaría" : "Aprobar"}
                   </button>
                 </>
               )}

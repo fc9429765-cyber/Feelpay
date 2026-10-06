@@ -33,6 +33,12 @@ interface SaveTransactionParams {
    * SOLO al admin.
    */
   aprobadoPorSecretaria?: string
+  /**
+   * El ADMIN aprobo la solicitud en Movimientos en Revision: el movimiento
+   * entra con la firma de secretaria pendiente (`estadosecre = 'por aprobar'`)
+   * para que ella tambien lo revise (06-oct-2026).
+   */
+  esperaSecretaria?: boolean
 }
 
 // La tabla operaciones_procesadas se creo en scripts/030 y todavia no esta en
@@ -160,6 +166,10 @@ export async function saveTransaction(params: SaveTransactionParams) {
       // registrada en `secretariaaprobo`, y approveTransaction la lee de ahi
       // para no volver a pedirsela cuando el admin apruebe.
       if (estadoadmin !== "por aprobar") estadosecre = "aprobado"
+    } else if (params.esperaSecretaria && estadoadmin !== "por aprobar") {
+      // Si ademas supera el limite, approveTransaction le pide la firma a
+      // secretaria cuando el admin apruebe ese segundo paso.
+      estadosecre = "por aprobar"
     }
 
     // Insert transaction record
