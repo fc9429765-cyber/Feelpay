@@ -201,6 +201,14 @@ export function CierreCaja({
   // Anterior, que ahora es una columna) y v_loan_financiero (cartera, por
   // CUOTAS en mora, con las bandas de `bandaCartera()`).
   type FrecKey = "diario" | "semanal" | "quincenal" | "mensual"
+  /**
+   * LAS VENTAS DEL DÍA, UNA POR UNA: las nuevas y las renovaciones, con su
+   * cliente y su valor. Van al informe imprimible (y a la pantalla y la
+   * imagen, que salen de las mismas filas). Es la misma fuente que el "Total
+   * Ventas" de `resumen_diario_v2` (script 123): préstamos creados ese día +
+   * renovaciones, así que las líneas suman exactamente ese total.
+   */
+  const [ventasDetalle, setVentasDetalle] = useState<{ tipo: "Nueva" | "Renovación"; cliente: string; valor: number; homologada: boolean }[]>([])
   const [cierreData, setCierreData] = useState({
     cajaAnterior: 0,
     efectivoFinal: 0,
@@ -234,10 +242,42 @@ export function CierreCaja({
         // La consulta a `payment_plan` por las cuotas que vencian hoy se
         // elimino: era la fuente de "Cant. Pagos" y del desglose por
         // frecuencia, y los dos pasaron al libro. Un viaje de red menos.
-        const [resumen, loansRes] = await Promise.all([
+        const [resumen, loansRes, ventasRes, renovRes] = await Promise.all([
           getResumenDia(supabase, rutaId, fechaObjetivo),
           supabase.from("loans").select("id").eq("ruta", rutaId).eq("estado", "activo"),
+          // Las ventas de ESE día en hora Colombia (el offset es obligatorio).
+          supabase
+            .from("loans")
+            .select("valor, origen, fecha_creacion, apodo_elegido, clients(nombre_completo, apodo, apodo_2)")
+            .eq("ruta", rutaId)
+            .gte("fecha_creacion", `${fechaObjetivo}T00:00:00-05:00`)
+            .lte("fecha_creacion", `${fechaObjetivo}T23:59:59-05:00`)
+            .order("fecha_creacion"),
+          supabase
+            .from("gestiones")
+            .select("detalle, loans(apodo_elegido, clients(nombre_completo, apodo, apodo_2))")
+            .eq("ruta", rutaId)
+            .eq("fecha_gestion", fechaObjetivo)
+            .eq("tipo", "ajuste")
+            .eq("estado", "aplicada"),
         ])
+
+        type Cli = { nombre_completo?: string | null; apodo?: string | null; apodo_2?: string | null } | null
+        const nombre = (c: Cli, elegido?: number | null) =>
+          ((elegido === 2 ? c?.apodo_2 : null) || c?.apodo || c?.nombre_completo || "Cliente").trim().toUpperCase()
+        const detalleVentas = [
+          ...((ventasRes.data ?? []) as unknown as { valor: number; origen: string | null; apodo_elegido: number | null; clients: Cli }[])
+            .map((l) => ({ tipo: "Nueva" as const, cliente: nombre(l.clients, l.apodo_elegido), valor: Number(l.valor) || 0, homologada: l.origen === "homologado" })),
+          ...((renovRes.data ?? []) as unknown as { detalle: Record<string, unknown> | null; loans: { apodo_elegido: number | null; clients: Cli } | null }[])
+            .filter((g) => g.detalle?.clase === "renovacion")
+            .map((g) => ({
+              tipo: "Renovación" as const,
+              cliente: nombre(g.loans?.clients ?? null, g.loans?.apodo_elegido),
+              valor: Number(g.detalle?.valor_entregado) || 0,
+              homologada: false,
+            })),
+        ]
+        setVentasDetalle(detalleVentas)
 
         const r = resumen.fila
         const valorPago = Number(r.valor_pago ?? 0)
@@ -526,6 +566,17 @@ export function CierreCaja({
     { type: "row", icon: Receipt,         iconColor: "text-icon-expense",    label: "Gastos",                 value: `$${data.gastos.valor.toLocaleString()} (${data.gastos.cantidad})` },
     { type: "row", icon: ArrowDownCircle, iconColor: "text-icon-withdrawal", label: "Retiros",                value: `$${data.retiros.valor.toLocaleString()} (${data.retiros.cantidad})` },
     { type: "row", icon: TrendingUp,      iconColor: "text-icon-income",     label: "Ingresos",               value: `$${data.ingresos.valor.toLocaleString()} (${data.ingresos.cantidad})` },
+
+    // VENTAS Y RENOVACIONES, una por renglón. Solo si hubo: una sección vacía
+    // en el papel no dice nada que "Total Ventas $0" no diga ya.
+    ...(ventasDetalle.length === 0 ? [] : ([
+      { type: "section", label: "Ventas y renovaciones" },
+      ...ventasDetalle.map((v) => ({
+        type: "subrow" as const,
+        label: `${v.tipo}${v.homologada ? " (homologada)" : ""} · ${v.cliente}`,
+        value: `$${v.valor.toLocaleString()}`,
+      })),
+    ] as RowItem[])),
 
     { type: "section", label: "Pagos" },
     { type: "row", icon: CreditCard,      iconColor: "text-icon-payment",    label: "Cant. Pagos",            value: `${data.pagos.realizados} / ${data.pagos.total} (${paymentPct}%)` },
