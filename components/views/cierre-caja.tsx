@@ -12,7 +12,7 @@ import {
  import { createClient } from "@/lib/supabase/client"
 import { getResumenDia } from "@/lib/resumen-dia"
 import { clientesSinGestionarHoy, type FrecuenciaKey } from "@/lib/dashboard-data"
-import { todayColombia, bandaCartera } from "@/lib/gestion-core"
+import { todayColombia, bandaCartera, sumarDias } from "@/lib/gestion-core"
 import { fmtFecha } from "@/lib/colombia-date"
 import { contarPendientes, suscribirCola } from "@/lib/offline-queue"
 import { getRutaUmbrales } from "@/lib/ruta-umbrales"
@@ -311,14 +311,15 @@ export function CierreCaja({
 
         const loanIds = ((loansRes.data ?? []) as { id: string }[]).map((l) => l.id)
         let cartera = { alDia: 0, mora: 0, vencidos: 0 }
-        // LAS DOS SECCIONES QUE SOLO SABEN DE HOY.
+        // EL ESTADO DE CARTERA DE ESE DÍA.
         //
-        // `v_loan_financiero` da la mora de HOY y `payment_plan.estado` es el
-        // cache de HOY. En un cierre atrasado las dos responderian por el dia
-        // equivocado, asi que ni se preguntan y las secciones no se imprimen
-        // (ver `rows`). Un papel con la fecha de ayer y la cartera de hoy es
-        // peor que un papel que no la trae.
-        if (!esAtrasado && loanIds.length > 0) {
+        // Hoy sale de `v_loan_financiero`, que calcula la mora contra HOY. Un
+        // cierre atrasado no la puede usar (daría la cartera de hoy con la fecha
+        // de ayer), así que la RECONSTRUYE a ese día con la misma regla
+        // (`carteraAlDia`). Antes la sección se omitía entera (07-oct-2026).
+        if (esAtrasado) {
+          cartera = await carteraAlDia(supabase, rutaId, fechaObjetivo)
+        } else if (loanIds.length > 0) {
           const moraRes = await supabase.from("v_loan_financiero").select("loan_id, cuotas_mora").in("loan_id", loanIds)
 
           const moraPorLoan = new Map<string, number>()
@@ -592,17 +593,11 @@ export function CierreCaja({
     // Los de la cartera del día que terminaron sin pagar (la resta de arriba).
     { type: "row", icon: XCircle,         iconColor: "text-status-vencido",  label: "Cant. No Pago",          value: `${Math.max(0, data.pagos.total - data.pagos.realizados)}` },
 
-    // LO QUE UN CIERRE ATRASADO NO PUEDE DECIR.
-    //
-    // El desglose por frecuencia sale del calculo de HOY (`clientesSinGestionarHoy`),
-    // y la cartera y las cuotas vencidas salen del estado de HOY. Contra una
-    // jornada de ayer los tres responderian por el dia equivocado, y el papel
-    // saldria con la fecha de ayer y los numeros de hoy. Se omiten, y la
-    // pantalla dice por que.
-    //
-    // Lo que SI queda —caja, recaudo, operaciones y cant. pagos— sale de
-    // `resumen_diario_v2` de ESE dia, asi que es exacto.
-    ...(esAtrasado ? [] : ([
+    // TAMBIÉN EN EL CIERRE ATRASADO (07-oct-2026). El desglose por frecuencia
+    // sale de `clientesSinGestionarHoy` con el día del cierre, y la cartera se
+    // reconstruye a ese día (`carteraAlDia`): los dos responden por la jornada
+    // que se está cerrando, no por hoy.
+    ...(([
       { type: "row", icon: CalendarDays,    iconColor: "text-success",         label: "Frec. Pago Diario",      value: `${data.frecuencia.diario.pagos}/${data.frecuencia.diario.total}` },
       { type: "row", icon: CalendarDays,    iconColor: "text-icon-calendar",   label: "Frec. Pago Semanal",     value: `${data.frecuencia.semanal.pagos}/${data.frecuencia.semanal.total}` },
       { type: "row", icon: CalendarClock,   iconColor: "text-icon-clock",      label: "Frec. Pago Quincenal",   value: `${data.frecuencia.quincenal.pagos}/${data.frecuencia.quincenal.total}` },
@@ -806,10 +801,6 @@ ${filasPdf}
               <p className="text-[12px] leading-relaxed text-muted-foreground">
                 Esa jornada quedo sin cerrar y por eso la ruta esta congelada. Al cerrarla
                 se habilita para iniciar la de hoy ({hoyTexto}).
-              </p>
-              <p className="text-[12px] leading-relaxed text-muted-foreground">
-                No se incluyen el desglose por frecuencia ni el estado de cartera: se
-                calculan sobre el estado de hoy y este cierre es de otro dia.
               </p>
             </div>
           </div>
@@ -1078,4 +1069,93 @@ ${filasPdf}
       )}
     </div>
   )
+}
+
+
+/**
+ * EL ESTADO DE CARTERA AL CIERRE DE UN DÍA PASADO.
+ *
+ * La misma regla de `v_loan_financiero` (scripts 043 y 100), pero con "hoy"
+ * puesto en el día `dia` en vez de la fecha real:
+ *   · cartera   los créditos creados hasta ese día que todavía debían algo
+ *   · pagado    lo neto del libro hasta ese día (pagos − reversas)
+ *   · vencido   las cuotas con vencimiento antes de `dia − 1` (la del día
+ *               anterior todavía no es mora, script 100)
+ *   · cuotas en mora = (vencido − pagado) / cuota de referencia, hacia arriba
+ * Las bandas las pone `bandaCartera()`, igual que el cierre de hoy.
+ */
+async function carteraAlDia(
+  supabase: ReturnType<typeof createClient>,
+  rutaId: number,
+  dia: string,
+): Promise<{ alDia: number; mora: number; vencidos: number }> {
+  const cartera = { alDia: 0, mora: 0, vencidos: 0 }
+  const { data: loans } = await supabase
+    .from("loans")
+    .select("id, valor, valor_a_pagar, estado")
+    .eq("ruta", rutaId)
+    // Las ventas anuladas nunca fueron cartera.
+    .not("estado", "in", "(inactivo,anulado)")
+    .lte("fecha_creacion", `${dia}T23:59:59-05:00`)
+  const prestamos = (loans ?? []) as { id: string; valor: number; valor_a_pagar: number | null }[]
+  if (prestamos.length === 0) return cartera
+
+  const plan = new Map<string, { fecha_pago: string; valor_cuota: number; es_extra: boolean | null }[]>()
+  const pagado = new Map<string, number>()
+  const ids = prestamos.map((l) => l.id)
+  // POR PÁGINAS: la base devuelve hasta 1.000 filas por consulta, y un lote
+  // de créditos diarios pasa de ahí en cuotas y pagos. Cortado, el pagado
+  // queda corto y la mora sale inflada (medido en la 151: 29 de 83 mal).
+  const todas = async <T,>(pedir: (desde: number) => PromiseLike<{ data: unknown; error: unknown }>): Promise<T[]> => {
+    const filas: T[] = []
+    for (let desde = 0; ; desde += 1000) {
+      const { data, error } = await pedir(desde)
+      if (error) throw error
+      const pagina = (data ?? []) as T[]
+      filas.push(...pagina)
+      if (pagina.length < 1000) return filas
+    }
+  }
+  for (let i = 0; i < ids.length; i += 100) {
+    const lote = ids.slice(i, i + 100)
+    const [cuotas, eventos] = await Promise.all([
+      todas<{ loan_id: string; fecha_pago: string; valor_cuota: number; es_extra: boolean | null }>((desde) =>
+        supabase.from("payment_plan").select("id, loan_id, fecha_pago, valor_cuota, es_extra")
+          .in("loan_id", lote).order("id").range(desde, desde + 999)),
+      todas<{ loan_id: string; tipo: string; monto: number }>((desde) =>
+        supabase.from("gestiones")
+          .select("id, loan_id, tipo, monto")
+          .in("loan_id", lote)
+          .eq("estado", "aplicada")
+          .in("tipo", ["pago", "cancelacion", "abono_venta", "reversa"])
+          .lte("fecha_gestion", dia)
+          .order("id").range(desde, desde + 999)),
+    ])
+    for (const q of cuotas) {
+      const l = plan.get(q.loan_id) ?? []
+      l.push(q)
+      plan.set(q.loan_id, l)
+    }
+    for (const g of eventos) {
+      pagado.set(g.loan_id, (pagado.get(g.loan_id) ?? 0) + (g.tipo === "reversa" ? -1 : 1) * (Number(g.monto) || 0))
+    }
+  }
+
+  const corte = sumarDias(dia, -1)
+  for (const l of prestamos) {
+    const neto = Math.max(0, pagado.get(l.id) ?? 0)
+    const total = Number(l.valor_a_pagar ?? l.valor) || 0
+    // Ya estaba cancelado ese día: no era cartera.
+    if (total - neto <= 0) continue
+    const cuotas = plan.get(l.id) ?? []
+    const vencido = cuotas.filter((q) => q.fecha_pago < corte).reduce((a, q) => a + (Number(q.valor_cuota) || 0), 0)
+    const normales = cuotas.filter((q) => !q.es_extra)
+    const ref = Math.max(0, ...(normales.length ? normales : cuotas).map((q) => Number(q.valor_cuota) || 0))
+    const cuotasMora = vencido - neto > 0 && ref > 0 ? Math.ceil((vencido - neto) / ref) : 0
+    const banda = bandaCartera(cuotasMora)
+    if (banda === "al_dia") cartera.alDia += 1
+    else if (banda === "mora") cartera.mora += 1
+    else cartera.vencidos += 1
+  }
+  return cartera
 }
