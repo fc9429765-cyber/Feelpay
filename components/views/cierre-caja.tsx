@@ -212,7 +212,7 @@ export function CierreCaja({
   const [cierreData, setCierreData] = useState({
     cajaAnterior: 0,
     efectivoFinal: 0,
-    recaudo: { total: 0, meta: 0 },
+    recaudo: { total: 0, meta: 0, efectivo: 0, transferencia: 0 },
     canceladas: { valor: 0, cantidad: 0 },
     ventas: { total: 0, cantidad: 0 },
     gastos: { valor: 0, cantidad: 0 },
@@ -337,7 +337,13 @@ export function CierreCaja({
         setCierreData({
           cajaAnterior,
           efectivoFinal: efectivo,
-          recaudo: { total: valorPago, meta: Number(r.meta_pagos ?? 0) },
+          // El recaudo partido por forma de pago (script 059).
+          recaudo: {
+            total: valorPago,
+            meta: Number(r.meta_pagos ?? 0),
+            efectivo: Number(r.pago_efectivo ?? 0),
+            transferencia: Number(r.pago_transferencia ?? 0),
+          },
           canceladas: { valor: Number(r.valor_canceladas ?? 0), cantidad: Number(r.cantidad_canceladas ?? 0) },
           ventas: { total: valorVentas, cantidad: Number(r.cantidad_ventas ?? 0) },
           gastos: { valor: valorGastos, cantidad: Number(r.cantidad_gastos ?? 0) },
@@ -559,13 +565,8 @@ export function CierreCaja({
 
     { type: "section", label: "Recaudo" },
     { type: "row", icon: Target,          iconColor: "text-icon-target",     label: "Total Recaudo",          value: `$${data.recaudo.total.toLocaleString()} (${data.pagos.realizados}) / $${data.recaudo.meta.toLocaleString()}` },
-
-    { type: "section", label: "Operaciones" },
-    { type: "row", icon: CheckCircle,     iconColor: "text-icon-check",      label: "Canceladas",             value: `$${data.canceladas.valor.toLocaleString()} (${data.canceladas.cantidad})` },
-    { type: "row", icon: ShoppingCart,    iconColor: "text-icon-sales",      label: "Total Ventas",           value: `$${data.ventas.total.toLocaleString()} (${data.ventas.cantidad})` },
-    { type: "row", icon: Receipt,         iconColor: "text-icon-expense",    label: "Gastos",                 value: `$${data.gastos.valor.toLocaleString()} (${data.gastos.cantidad})` },
-    { type: "row", icon: ArrowDownCircle, iconColor: "text-icon-withdrawal", label: "Retiros",                value: `$${data.retiros.valor.toLocaleString()} (${data.retiros.cantidad})` },
-    { type: "row", icon: TrendingUp,      iconColor: "text-icon-income",     label: "Ingresos",               value: `$${data.ingresos.valor.toLocaleString()} (${data.ingresos.cantidad})` },
+    { type: "subrow", label: "Efectivo:",      value: `$${data.recaudo.efectivo.toLocaleString()}` },
+    { type: "subrow", label: "Transferencia:", value: `$${data.recaudo.transferencia.toLocaleString()}` },
 
     // VENTAS: el total de las nuevas y el de las renovaciones (no una por
     // una, a pedido del dueño 07-oct-2026). Las dos suman el "Total Ventas".
@@ -574,13 +575,22 @@ export function CierreCaja({
       const del = ventasDetalle.filter((v) => v.tipo === tipo)
       return {
         type: "subrow" as const,
-        label: tipo === "Nueva" ? "Total de nuevas" : "Total de renovaciones",
+        label: tipo === "Nueva" ? "Nuevas:" : "Renovaciones:",
         value: `$${del.reduce((a, v) => a + v.valor, 0).toLocaleString()} (${del.length})`,
       }
     }),
 
+    { type: "section", label: "Operaciones" },
+    { type: "row", icon: CheckCircle,     iconColor: "text-icon-check",      label: "Canceladas",             value: `$${data.canceladas.valor.toLocaleString()} (${data.canceladas.cantidad})` },
+    { type: "row", icon: ShoppingCart,    iconColor: "text-icon-sales",      label: "Total Ventas",           value: `$${data.ventas.total.toLocaleString()} (${data.ventas.cantidad})` },
+    { type: "row", icon: Receipt,         iconColor: "text-icon-expense",    label: "Gastos",                 value: `$${data.gastos.valor.toLocaleString()} (${data.gastos.cantidad})` },
+    { type: "row", icon: ArrowDownCircle, iconColor: "text-icon-withdrawal", label: "Retiros",                value: `$${data.retiros.valor.toLocaleString()} (${data.retiros.cantidad})` },
+    { type: "row", icon: TrendingUp,      iconColor: "text-icon-income",     label: "Ingresos",               value: `$${data.ingresos.valor.toLocaleString()} (${data.ingresos.cantidad})` },
+
     { type: "section", label: "Pagos" },
     { type: "row", icon: CreditCard,      iconColor: "text-icon-payment",    label: "Cant. Pagos",            value: `${data.pagos.realizados} / ${data.pagos.total} (${paymentPct}%)` },
+    // Los de la cartera del día que terminaron sin pagar (la resta de arriba).
+    { type: "row", icon: XCircle,         iconColor: "text-status-vencido",  label: "Cant. No Pago",          value: `${Math.max(0, data.pagos.total - data.pagos.realizados)}` },
 
     // LO QUE UN CIERRE ATRASADO NO PUEDE DECIR.
     //
@@ -606,6 +616,7 @@ export function CierreCaja({
       { type: "row", icon: Users,           iconColor: "text-status-al-dia",   label: "Clientes Al Día",        value: `${data.cartera.alDia}` },
       { type: "row", icon: AlertCircle,     iconColor: "text-status-mora",     label: "Clientes en Mora",       value: `${data.cartera.mora}` },
       { type: "row", icon: XCircle,         iconColor: "text-status-vencido",  label: "Clientes Vencidos",      value: `${data.cartera.vencidos}` },
+      { type: "row", icon: Users,           iconColor: "text-icon-wallet",     label: "Total Clientes",         value: `${data.cartera.alDia + data.cartera.mora + data.cartera.vencidos}` },
     ] as RowItem[])),
   ]
 
