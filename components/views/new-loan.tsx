@@ -39,6 +39,10 @@ import { esErrorDeRed } from "@/lib/credenciales-offline"
 import { obtenerUbicacion } from "@/lib/geo"
 import dynamic from "next/dynamic"
 import { CamaraEnApp } from "@/components/camara-en-app"
+import { renderComprobanteImagen, type SeccionComprobante } from "@/lib/imagen-comprobante"
+import { CompartirComprobanteDialog } from "@/components/compartir-comprobante-dialog"
+import { getUsuarioSesion } from "@/lib/movimientos"
+import { etiquetaFrecuencia } from "@/lib/gestion-core"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Dialog,
@@ -506,6 +510,14 @@ export function NewLoan({
     open: false,
     msg: "",
   })
+  /**
+   * EL RECIBO DE LA VENTA (07-oct-2026). Se toma una foto de los datos ANTES
+   * de limpiar el formulario, y desde el diálogo de éxito se comparte como
+   * imagen, igual que el recibo de pago. No hay recibo de una venta que quedó
+   * en revisión: todavía no es una venta.
+   */
+  const [reciboVenta, setReciboVenta] = useState<DatosReciboVenta | null>(null)
+  const [compartirRecibo, setCompartirRecibo] = useState(false)
   // Dialog modal para campos faltantes. Muestra la lista de campos
   // pendientes de forma central y explicita.
   const [errorDialog, setErrorDialog] = useState<{ open: boolean; fields: string[] }>({
@@ -2166,6 +2178,35 @@ export function NewLoan({
             || clientOptions.find((c) => c.id === selectedClient)?.nombre_completo
             || "Cliente")
 
+      // Lo que lleva el recibo, tomado ya: el formulario se limpia al guardar.
+      let rutaNombre = `Ruta ${p_ruta_id}`
+      try {
+        const r = JSON.parse(localStorage.getItem("selectedRuta") ?? "null")
+        if (r?.id === p_ruta_id && r?.nombre) rutaNombre = String(r.nombre)
+      } catch { /* sin nombre */ }
+      const datosRecibo: DatosReciboVenta = {
+        esRenovacion,
+        clienteId: isNewClient ? null : selectedClient || null,
+        nombre: isNewClient ? (nombreCompleto || apodo || "Cliente") : nombreParaEtiqueta,
+        documento: isNewClient ? documento : "",
+        valor: valorNum,
+        tasa: prestamoEmpleado ? 0 : Number.parseFloat(tasaInteres) || 0,
+        totalAPagar: valorAPagarNum,
+        cuotas: numeroCuotasNum,
+        valorCuota: valorCuotaNum,
+        frecuencia: frecuenciaPago,
+        primerPago: fechaPrimerPago,
+        abono: abonoInicialNum,
+        entrega: tipoVenta,
+        efectivo: tipoVenta === "mixto" ? Number.parseFloat(ventaEfectivo) || 0 : null,
+        transferencia: tipoVenta === "mixto" ? Number.parseFloat(ventaTransferencia) || 0 : null,
+        dia: diaVenta,
+        hora: new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit", hour12: true }).format(new Date()),
+        rutaNombre,
+        vendedor: getSolicitanteNombre() || getUsuarioSesion().nombre || "",
+        sinSenal: false,
+      }
+
       // PRIMERA LÍNEA. Cuando la lectura del umbral sí llegó, se decide acá
       // para poder preguntarle al vendedor ANTES de mandar nada. Si dice que
       // no, no se envía; si dice que sí, la solicitud entra directo y la RPC
@@ -2306,6 +2347,7 @@ export function NewLoan({
           // registrada sería mentir en el caso en que supere el umbral.
           msg: "La venta quedó guardada en el teléfono y se enviará automáticamente cuando vuelva la señal. Si supera el límite de la unidad, pasará a revisión de secretaría.",
         })
+        setReciboVenta({ ...datosRecibo, sinSenal: true })
         resetFormularioVenta()
         return
       }
@@ -2359,6 +2401,7 @@ export function NewLoan({
         ? `Se registró la venta de $${Number(valor || 0).toLocaleString()} para ${nombreParaEtiqueta}, contada en el reporte del ${fmtFecha(diaVenta)}.`
         : `Se registró la venta de $${Number(valor || 0).toLocaleString()} para ${nombreParaEtiqueta}.`
       showToastPill("Venta registrada exitosamente")
+      setReciboVenta(datosRecibo)
       setSuccessDialog({ open: true, msg: successMsg })
       setSuccessAlert(successMsg)
       setFormAlert(null)
@@ -2533,7 +2576,19 @@ export function NewLoan({
               {successDialog.msg}
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="mt-2 justify-center">
+          <DialogFooter className="mt-2 flex-col gap-2 sm:flex-col sm:justify-center sm:space-x-0">
+            {reciboVenta && (
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  setSuccessDialog((prev) => ({ ...prev, open: false }))
+                  setCompartirRecibo(true)
+                }}
+              >
+                <MessageCircle className="mr-2 h-4 w-4" /> Compartir recibo de la venta
+              </Button>
+            )}
             {/* AL ACEPTAR SE VA A LA RUTA POR COBRAR.
                 Antes el diálogo se cerraba y dejaba el formulario de Nueva
                 Venta vacío en pantalla: para ver el cliente que se acababa de
@@ -2547,6 +2602,7 @@ export function NewLoan({
               className="w-full"
               onClick={() => {
                 setSuccessDialog({ open: false, msg: "" })
+                setReciboVenta(null)
                 onCancel?.()
               }}
             >
@@ -2555,6 +2611,21 @@ export function NewLoan({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {reciboVenta && (
+        <CompartirComprobanteDialog
+          open={compartirRecibo}
+          onOpenChange={(v) => {
+            setCompartirRecibo(v)
+            // Al cerrar vuelve el diálogo de éxito, con su "Ir a la ruta".
+            if (!v) setSuccessDialog((prev) => ({ ...prev, open: true }))
+          }}
+          construirImagen={() => construirReciboVenta(reciboVenta)}
+          mensajeChat={`Recibo de ${reciboVenta.esRenovacion ? "renovación" : "venta"} — ${reciboVenta.nombre}`}
+          currentUser={{ id: getUsuarioSesion().id ?? 0, nombre: getUsuarioSesion().nombre }}
+          titulo="Compartir el recibo"
+        />
+      )}
 
       {/* Dialog de confirmacion: la venta supera el umbral de la ruta */}
       <Dialog open={showRevisionDialog} onOpenChange={(open) => { if (!open) handleRevisionChoice(false) }}>
@@ -3854,4 +3925,104 @@ export function NewLoan({
       </div>
     </div>
   )
+}
+
+
+// ── Recibo de la venta ─────────────────────────────────────────────────────
+
+interface DatosReciboVenta {
+  esRenovacion: boolean
+  /** En una renovación, para traer el nombre real y el documento del cliente. */
+  clienteId: string | null
+  nombre: string
+  documento: string
+  valor: number
+  tasa: number
+  totalAPagar: number
+  cuotas: number
+  valorCuota: number
+  frecuencia: string
+  primerPago: string
+  abono: number
+  entrega: string
+  efectivo: number | null
+  transferencia: number | null
+  /** El día de la venta (YYYY-MM-DD), el que cuenta en el reporte. */
+  dia: string
+  hora: string
+  rutaNombre: string
+  vendedor: string
+  /** Quedó en la cola del teléfono: todavía no llegó al servidor. */
+  sinSenal: boolean
+}
+
+/**
+ * Dibuja el recibo con el mismo motor que el de pago y el cierre de caja
+ * (`lib/imagen-comprobante.ts`). En una renovación el formulario no trae el
+ * nombre completo ni el documento, así que se buscan; sin señal queda el
+ * alias, que es lo que se tiene.
+ */
+async function construirReciboVenta(d: DatosReciboVenta) {
+  let nombre = d.nombre
+  let documento = d.documento
+  if (d.clienteId && !d.sinSenal) {
+    try {
+      const { data } = await createClient()
+        .from("clients").select("nombre_completo, documento").eq("id", d.clienteId).maybeSingle()
+      const c = data as { nombre_completo?: string | null; documento?: string | null } | null
+      if (c?.nombre_completo?.trim()) nombre = c.nombre_completo.trim()
+      if (c?.documento?.trim()) documento = c.documento.trim()
+    } catch (err) {
+      console.warn("[v0] Recibo de venta sin datos del cliente:", err)
+    }
+  }
+  // Mixto en tres renglones: en uno solo no cabe en el ancho del recibo.
+  const entrega =
+    d.entrega === "mixto"
+      ? [
+          { label: "Entrega", valor: "Mixto" },
+          { label: "  En efectivo", valor: fmtMoneda(d.efectivo) },
+          { label: "  En transferencia", valor: fmtMoneda(d.transferencia) },
+        ]
+      : [{ label: "Entrega", valor: d.entrega === "transferencia" ? "Transferencia" : "Efectivo" }]
+  const secciones: SeccionComprobante[] = [
+    {
+      titulo: "Cliente",
+      filas: [
+        { label: "Nombre", valor: nombre.toUpperCase() },
+        ...(documento ? [{ label: "Documento", valor: documento }] : []),
+        { label: "Tipo", valor: d.esRenovacion ? "Renovación" : "Venta nueva" },
+      ],
+    },
+    {
+      titulo: "Venta",
+      filas: [
+        { label: "Valor entregado", valor: fmtMoneda(d.valor), destacado: true },
+        ...(d.tasa > 0 ? [{ label: "Interés", valor: `${d.tasa}%` }] : []),
+        { label: "Total a pagar", valor: fmtMoneda(d.totalAPagar), destacado: true },
+        { label: "Cuotas", valor: `${d.cuotas} de ${fmtMoneda(d.valorCuota)}` },
+        { label: "Frecuencia", valor: etiquetaFrecuencia(d.frecuencia) },
+        ...(d.primerPago ? [{ label: "Primer pago", valor: fmtFecha(d.primerPago) }] : []),
+        ...entrega,
+      ],
+    },
+    ...(d.abono > 0
+      ? [{
+          titulo: "Abono inicial",
+          filas: [
+            { label: "Abonó", valor: fmtMoneda(d.abono) },
+            { label: "Saldo", valor: fmtMoneda(Math.max(0, d.totalAPagar - d.abono)), destacado: true },
+          ],
+        }]
+      : []),
+  ]
+  return renderComprobanteImagen({
+    titulo: d.esRenovacion ? "Recibo de renovación" : "Recibo de venta",
+    subtitulo: d.rutaNombre,
+    meta: `${fmtFecha(d.dia)}  ·  ${d.hora}${d.sinSenal ? "  ·  Pendiente de enviar" : ""}`,
+    secciones,
+    logoUrl: `${window.location.origin}/opad-logo.png`,
+    nombreArchivo: `recibo-venta-${nombre.replace(/[^\w]+/g, "-").toLowerCase()}-${d.dia}.png`,
+    pie: d.vendedor ? `Vendió: ${d.vendedor}` : "Generado por Feelpay",
+  })
 }

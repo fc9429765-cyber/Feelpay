@@ -558,7 +558,7 @@ export function CierreCaja({
     { type: "row", icon: Banknote,        iconColor: "text-icon-cash",       label: "Efectivo Final",         value: `$${data.efectivoFinal.toLocaleString()}` },
 
     { type: "section", label: "Recaudo" },
-    { type: "row", icon: Target,          iconColor: "text-icon-target",     label: "Total Recaudo",          value: `$${data.recaudo.total.toLocaleString()} / $${data.recaudo.meta.toLocaleString()}` },
+    { type: "row", icon: Target,          iconColor: "text-icon-target",     label: "Total Recaudo",          value: `$${data.recaudo.total.toLocaleString()} (${data.pagos.realizados}) / $${data.recaudo.meta.toLocaleString()}` },
 
     { type: "section", label: "Operaciones" },
     { type: "row", icon: CheckCircle,     iconColor: "text-icon-check",      label: "Canceladas",             value: `$${data.canceladas.valor.toLocaleString()} (${data.canceladas.cantidad})` },
@@ -567,16 +567,17 @@ export function CierreCaja({
     { type: "row", icon: ArrowDownCircle, iconColor: "text-icon-withdrawal", label: "Retiros",                value: `$${data.retiros.valor.toLocaleString()} (${data.retiros.cantidad})` },
     { type: "row", icon: TrendingUp,      iconColor: "text-icon-income",     label: "Ingresos",               value: `$${data.ingresos.valor.toLocaleString()} (${data.ingresos.cantidad})` },
 
-    // VENTAS Y RENOVACIONES, una por renglón. Solo si hubo: una sección vacía
-    // en el papel no dice nada que "Total Ventas $0" no diga ya.
-    ...(ventasDetalle.length === 0 ? [] : ([
-      { type: "section", label: "Ventas y renovaciones" },
-      ...ventasDetalle.map((v) => ({
+    // VENTAS: el total de las nuevas y el de las renovaciones (no una por
+    // una, a pedido del dueño 07-oct-2026). Las dos suman el "Total Ventas".
+    { type: "section", label: "Ventas" },
+    ...(["Nueva", "Renovación"] as const).map((tipo) => {
+      const del = ventasDetalle.filter((v) => v.tipo === tipo)
+      return {
         type: "subrow" as const,
-        label: `${v.tipo}${v.homologada ? " (homologada)" : ""} · ${v.cliente}`,
-        value: `$${v.valor.toLocaleString()}`,
-      })),
-    ] as RowItem[])),
+        label: tipo === "Nueva" ? "Total de nuevas" : "Total de renovaciones",
+        value: `$${del.reduce((a, v) => a + v.valor, 0).toLocaleString()} (${del.length})`,
+      }
+    }),
 
     { type: "section", label: "Pagos" },
     { type: "row", icon: CreditCard,      iconColor: "text-icon-payment",    label: "Cant. Pagos",            value: `${data.pagos.realizados} / ${data.pagos.total} (${paymentPct}%)` },
